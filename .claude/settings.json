@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/lucaa/.claude/projects/c--Users-lucaa-OneDrive-Dokumente-vinoclean--wine-data-onboarding-portal-old/memory/**)",
+      "PowerShell(Get-Process -Id 7084 -ErrorAction SilentlyContinue)",
+      "PowerShell($env:PATH = [System.Environment]::GetEnvironmentVariable\\(\"PATH\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"PATH\",\"User\"\\); cd \"c:\\\\Users\\\\lucaa\\\\OneDrive\\\\Dokumente\\\\vinoclean_-wine-data-onboarding-portal-old\"; npm.cmd exec vite -- --port 5173)",
+      "PowerShell(netstat -ano)",
+      "PowerShell($env:PATH = [System.Environment]::GetEnvironmentVariable\\(\"PATH\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"PATH\",\"User\"\\); cd \"c:\\\\Users\\\\lucaa\\\\OneDrive\\\\Dokumente\\\\vinoclean_-wine-data-onboarding-portal-old\"; python server.py)"
+    ]
+  }
+}
