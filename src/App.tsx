@@ -963,6 +963,42 @@ export default function App() {
     }
   };
 
+  const handleExportErrors = () => {
+    const errorRows = processedData.filter(r => r.status === 'red');
+    if (errorRows.length === 0) return;
+
+    const currentSchema = getCurrentSchema();
+    const csvHeaders = [...currentSchema.fields.map(f => f.label), 'Errors to Fix'].join(',');
+
+    const rows = errorRows.map(row => {
+      const fields = currentSchema.fields.map(field => {
+        let val = row[field.key];
+        if (typeof val === 'object' && val?.value !== undefined) {
+          val = `${val.currency} ${val.value}`;
+        }
+        const stringVal = String(val || '');
+        if (stringVal.includes(',') || stringVal.includes('"') || stringVal.includes('\n')) {
+          return `"${stringVal.replace(/"/g, '""')}"`;
+        }
+        return stringVal;
+      });
+      const errorsVal = row.errors?.join('; ') || '';
+      fields.push(`"${errorsVal.replace(/"/g, '""')}"`);
+      return fields.join(',');
+    });
+
+    const csvContent = [csvHeaders, ...rows].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `errors_${fileName.split('.')[0] || 'data'}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   /**
    * Handles the initial file upload.
    * Parses the file, sets raw data, and determines the next step.
@@ -2840,7 +2876,16 @@ export default function App() {
               <RefreshCcw size={14} />
               Start New
             </button>
-            <button 
+            {showOnlyErrors && processedData.some(r => r.status === 'red') && (
+              <button
+                onClick={handleExportErrors}
+                className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider bg-rose-600 text-white px-6 py-2 rounded-full shadow-lg hover:scale-105 transition-all"
+              >
+                <Download size={14} />
+                Export Errors ({processedData.filter(r => r.status === 'red').length})
+              </button>
+            )}
+            <button
               onClick={handleExport}
               className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider bg-black text-white px-6 py-2 rounded-full shadow-lg hover:scale-105 transition-all"
             >

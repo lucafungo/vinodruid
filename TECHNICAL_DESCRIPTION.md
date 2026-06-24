@@ -107,7 +107,8 @@ File selected (CSV or XLSX)
   → Review table displayed (green = clean, red = errors)
   → User fixes errors via RowEditor, bulk actions, or inline editing in the comparison modal
   → handleCalculationSmartFix() fills derivable fields
-  → Export: cleaned rows downloaded as CSV
+  → Export: cleaned rows downloaded as CSV (Export Clean CSV)
+  → Export errors: red rows only downloaded as CSV with an added "Errors to Fix" column (Export Errors button — only visible when errors exist)
   → Session auto-saved to DB at every stage
 ```
 
