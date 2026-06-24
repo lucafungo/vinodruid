@@ -105,7 +105,7 @@ File selected (CSV or XLSX)
   → handleMappingComplete()
   → processData() — per-row validation
   → Review table displayed (green = clean, red = errors)
-  → User fixes errors via RowEditor or bulk actions
+  → User fixes errors via RowEditor, bulk actions, or inline editing in the comparison modal
   → handleCalculationSmartFix() fills derivable fields
   → Export: cleaned rows downloaded as CSV
   → Session auto-saved to DB at every stage
@@ -137,16 +137,23 @@ A file can contain rows with and without LWINs — each is validated independent
 |---|---|
 | Required field missing | Per schema definition + per-row LWIN logic |
 | LWIN format | Exactly 7 digits |
-| Vintage | Valid year 1900–present, or `NV` |
+| Vintage | Valid year 1900–present, or `NV`; empty vintage stays empty and is caught by required-field check where applicable |
 | Bottle size | Normalised to cl; handles ml, L, named sizes (Magnum, etc.) |
 | Country | Must exist in `regions` table with `type = 'Country'` |
 | Region / Sub-region | Must exist in `regions` table; parent hierarchy checked against country |
 | Wine type | Validated against internal `WINE_TYPES` list |
 | Tax status | Must be `IB` or `DP` |
+| Email | Must contain exactly one `@` and no spaces |
+| Names / Surnames | Letters (including accented), spaces, hyphens, apostrophes, dots only — anything else flagged red |
+| Account code / Cellar code | Alphanumeric plus hyphens, underscores, slashes, dots — special characters flagged red |
+| Address lines | Unicode letters, digits, and standard punctuation only (`,.'-/#&()`) — other symbols flagged red |
+| City / County | Letters, spaces, hyphens, apostrophes, dots only — digits and other symbols flagged red |
+| Company name / Cellar name | Letters, digits, and common business punctuation — symbols such as `@`, `$`, `%` flagged red |
+| Post code | Letters, digits, spaces, hyphens only |
 | Numeric fields | Quantities, sizes, prices — must parse as numbers |
 | Date fields | Normalised via `normalizeDate()`; flagged if unrecognisable |
-| Cellar name | Must exist in `master_cellars` if master list is loaded |
-| Account code | Must exist in `master_clients` if master list is loaded |
+| Cellar name | Also checked against `master_cellars` if master list is loaded |
+| Account code | Also checked against `master_clients` if master list is loaded |
 | Duplicates | Fingerprinted per data type; duplicates flagged with comparison modal |
 | Price anomalies | Outliers flagged against per-wine median and global dataset median |
 

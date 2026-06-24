@@ -2085,31 +2085,41 @@ export default function App() {
         // Email Validation
         else if (field.key === 'email' || field.key === 'main_contact_email') {
            const val = String(rawValue || '').trim();
-           if ((!val.includes('@') || val.includes(' ')) && !isMissing) {
+           if (!isMissing) {
+             const atCount = (val.match(/@/g) || []).length;
+             if (atCount !== 1 || val.includes(' ')) {
+               result.status = 'red';
+               result.errors.push(`Invalid email: '${val}'. Must contain exactly one @ and no spaces.`);
+               hasError = true;
+               result.fieldErrors.push(field.key);
+             }
+           }
+           result[field.key] = val;
+        }
+        else if (field.key === 'address_line_1' || field.key === 'address_line_2' || field.key === 'address_line_3') {
+           const val = String(rawValue || '').trim();
+           if (!isMissing && /[^\p{L}0-9\s,\-.'\/#&()""]/u.test(val)) {
              result.status = 'red';
-             result.errors.push(`Invalid Email: ${val}`);
+             result.errors.push(`${field.label} contains invalid characters: '${val}'`);
              hasError = true;
              result.fieldErrors.push(field.key);
            }
            result[field.key] = val;
         }
-        else if (field.key === 'address_line_1') {
-           let val = String(rawValue || '').trim();
-           // Remove special characters \, <, >, ", ', #
-           const original = val;
-           val = val.replace(/[\\<>"'#]/g, '');
-           if (val !== original) {
-             result.autoFixedFields = [...(result.autoFixedFields || []), field.key];
-           }
-           result[field.key] = val;
-        }
         else if (field.key === 'city') {
            const val = String(rawValue || '').trim();
-           const countryVal = String(getValue('country') || '').trim();
-           if (countryVal && val.toLowerCase().includes(countryVal.toLowerCase()) && !isMissing) {
-              result.status = 'yellow';
-              result.errors.push(`City name '${val}' should not contain Country name '${countryVal}'`);
-              hasWarning = true;
+           if (!isMissing && /[^\p{L}\s\-''.]/u.test(val)) {
+             result.status = 'red';
+             result.errors.push(`City contains invalid characters: '${val}'`);
+             hasError = true;
+             result.fieldErrors.push(field.key);
+           } else {
+             const countryVal = String(getValue('country') || '').trim();
+             if (countryVal && val.toLowerCase().includes(countryVal.toLowerCase()) && !isMissing) {
+               result.status = 'yellow';
+               result.errors.push(`City name '${val}' should not contain Country name '${countryVal}'`);
+               hasWarning = true;
+             }
            }
            result[field.key] = val;
         }
@@ -2149,17 +2159,19 @@ export default function App() {
         }
         else if (field.key === 'forename' || field.key === 'surname') {
            const val = String(rawValue || '').trim();
-           // Check for "Company", "Ltd", "Salutations" as whole words
-           const suspicious = ['company', 'ltd', 'limited', 'plc', 'mr', 'mrs', 'miss', 'dr', 'sir'];
-           const found = suspicious.find(s => {
-             const regex = new RegExp(`\\b${s}\\b`, 'i');
-             return regex.test(val);
-           });
-           
-           if (found && !isMissing) {
-              result.status = 'yellow';
-              result.errors.push(`Possible invalid name (contains '${found}'). Ensure no company names or salutations.`);
-              hasWarning = true;
+           if (!isMissing && /[^\p{L}\s\-''.]/u.test(val)) {
+             result.status = 'red';
+             result.errors.push(`${field.label} contains invalid characters: '${val}'`);
+             hasError = true;
+             result.fieldErrors.push(field.key);
+           } else {
+             const suspicious = ['company', 'ltd', 'limited', 'plc', 'mr', 'mrs', 'miss', 'dr', 'sir'];
+             const found = suspicious.find(s => new RegExp(`\\b${s}\\b`, 'i').test(val));
+             if (found && !isMissing) {
+               result.status = 'yellow';
+               result.errors.push(`Possible invalid name (contains '${found}'). Ensure no company names or salutations.`);
+               hasWarning = true;
+             }
            }
            result[field.key] = val;
         }
@@ -2191,6 +2203,61 @@ export default function App() {
             hasError = true;
             result.fieldErrors.push(field.key);
           }
+        }
+        // Account code / cellar code: letters, digits, spaces, hyphens, underscores, slashes, dots
+        else if (field.key === 'account_code' || field.key === 'cellar_code') {
+           const val = String(rawValue || '').trim();
+           if (!isMissing && /[^A-Za-z0-9\s\-_\/.]/.test(val)) {
+             result.status = 'red';
+             result.errors.push(`${field.label} contains invalid characters: '${val}'`);
+             hasError = true;
+             result.fieldErrors.push(field.key);
+           }
+           result[field.key] = val;
+        }
+        // County: letters, spaces, hyphens, apostrophes, dots
+        else if (field.key === 'county') {
+           const val = String(rawValue || '').trim();
+           if (!isMissing && /[^\p{L}\s\-''.]/u.test(val)) {
+             result.status = 'red';
+             result.errors.push(`County contains invalid characters: '${val}'`);
+             hasError = true;
+             result.fieldErrors.push(field.key);
+           }
+           result[field.key] = val;
+        }
+        // Company name: letters, digits, spaces, common business punctuation
+        else if (field.key === 'company_name') {
+           const val = String(rawValue || '').trim();
+           if (!isMissing && /[^\p{L}0-9\s\-.,''()&\/]/u.test(val)) {
+             result.status = 'red';
+             result.errors.push(`Company Name contains invalid characters: '${val}'`);
+             hasError = true;
+             result.fieldErrors.push(field.key);
+           }
+           result[field.key] = val;
+        }
+        // Cellar name: letters, digits, spaces, hyphens, commas, apostrophes, dots
+        else if (field.key === 'cellar_name') {
+           const val = String(rawValue || '').trim();
+           if (!isMissing && /[^\p{L}0-9\s\-,.']/u.test(val)) {
+             result.status = 'red';
+             result.errors.push(`Cellar Name contains invalid characters: '${val}'`);
+             hasError = true;
+             result.fieldErrors.push(field.key);
+           }
+           result[field.key] = val;
+        }
+        // Post code: letters, digits, spaces, hyphens
+        else if (field.key === 'post_code') {
+           const val = String(rawValue || '').trim();
+           if (!isMissing && /[^A-Za-z0-9\s\-]/.test(val)) {
+             result.status = 'red';
+             result.errors.push(`Post Code contains invalid characters: '${val}'`);
+             hasError = true;
+             result.fieldErrors.push(field.key);
+           }
+           result[field.key] = val;
         }
         else {
           result[field.key] = rawValue || '';
@@ -3448,6 +3515,11 @@ export default function App() {
             onRemove={(id) => {
               handleDeleteRow(id);
               setComparingDuplicate(null);
+            }}
+            onEdit={(rowId, fieldKey, newValue) => {
+              const row = processedData.find(r => r.id === rowId);
+              if (!row) return;
+              handleRowUpdate({ ...row, [fieldKey]: newValue }, fieldKey);
             }}
             onClose={() => setComparingDuplicate(null)}
           />

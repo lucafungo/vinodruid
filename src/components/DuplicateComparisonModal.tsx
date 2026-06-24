@@ -1,5 +1,5 @@
-import React from 'react';
-import { X, Check, Trash2, AlertCircle } from 'lucide-react';
+import React, { useState } from 'react';
+import { X, Check, Trash2, AlertCircle, Edit2 } from 'lucide-react';
 import { motion } from 'motion/react';
 
 interface DuplicateComparisonModalProps {
@@ -9,23 +9,86 @@ interface DuplicateComparisonModalProps {
   onKeep: (id: number) => void;
   onRemove: (id: number) => void;
   onClose: () => void;
+  onEdit?: (rowId: number, fieldKey: string, newValue: string) => void;
   type?: 'duplicate' | 'price';
 }
 
-export const DuplicateComparisonModal: React.FC<DuplicateComparisonModalProps> = ({ 
-  row1, 
-  row2, 
-  fields, 
-  onKeep, 
-  onRemove, 
+export const DuplicateComparisonModal: React.FC<DuplicateComparisonModalProps> = ({
+  row1,
+  row2,
+  fields,
+  onKeep,
+  onRemove,
   onClose,
+  onEdit,
   type = 'duplicate'
 }) => {
   const isPrice = type === 'price';
-  
+  const [editingCell, setEditingCell] = useState<{ rowId: number; fieldKey: string; value: string } | null>(null);
+
+  const startEdit = (rowId: number, fieldKey: string, currentValue: any) => {
+    if (!onEdit) return;
+    setEditingCell({ rowId, fieldKey, value: currentValue === undefined || currentValue === null ? '' : String(currentValue) });
+  };
+
+  const commitEdit = () => {
+    if (!editingCell || !onEdit) return;
+    onEdit(editingCell.rowId, editingCell.fieldKey, editingCell.value);
+    setEditingCell(null);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') commitEdit();
+    if (e.key === 'Escape') setEditingCell(null);
+  };
+
+  const renderCell = (row: any, fieldKey: string, isDifferent: boolean, isPriceField: boolean) => {
+    const rawVal = row[fieldKey];
+    const isCurrentlyEditing = editingCell?.rowId === row.id && editingCell?.fieldKey === fieldKey;
+
+    const bgClass = isDifferent
+      ? (isPrice && isPriceField ? 'bg-indigo-50/30' : 'bg-amber-50/30')
+      : '';
+    const fontClass = isDifferent
+      ? (isPrice && isPriceField ? 'font-bold' : 'font-medium')
+      : '';
+
+    if (isCurrentlyEditing) {
+      return (
+        <div className={`py-2 px-4 text-sm border-b border-black/5 ${bgClass}`}>
+          <input
+            autoFocus
+            className="w-full px-2 py-1 text-sm border border-black/20 rounded outline-none focus:border-black/50 bg-white"
+            value={editingCell.value}
+            onChange={e => setEditingCell(prev => prev ? { ...prev, value: e.target.value } : null)}
+            onBlur={commitEdit}
+            onKeyDown={handleKeyDown}
+          />
+        </div>
+      );
+    }
+
+    return (
+      <div
+        className={`group py-3 px-4 text-sm border-b border-black/5 ${bgClass} ${fontClass} ${onEdit ? 'cursor-pointer hover:bg-black/[0.02]' : ''} flex items-center justify-between gap-2`}
+        onClick={() => startEdit(row.id, fieldKey, rawVal)}
+        title={onEdit ? 'Click to edit' : undefined}
+      >
+        <span>
+          {rawVal === undefined || rawVal === null || rawVal === ''
+            ? <span className="text-black/20 italic">Empty</span>
+            : String(rawVal)}
+        </span>
+        {onEdit && (
+          <Edit2 size={11} className="text-black/25 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, scale: 0.95, y: 20 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         className="bg-white rounded-[32px] shadow-2xl border border-black/5 w-full max-w-5xl overflow-hidden flex flex-col max-h-[90vh]"
@@ -38,13 +101,13 @@ export const DuplicateComparisonModal: React.FC<DuplicateComparisonModalProps> =
             <div>
               <h2 className="text-2xl font-serif font-medium">{isPrice ? 'Compare Prices' : 'Compare Duplicates'}</h2>
               <p className="text-sm text-black/40">
-                {isPrice 
-                  ? 'Review this row against a reference entry to verify the price discrepancy.' 
-                  : 'Review these rows side-by-side to decide which one to keep.'}
+                {isPrice
+                  ? 'Review this row against a reference entry to verify the price discrepancy. Click any value to edit it.'
+                  : 'Review these rows side-by-side to decide which one to keep. Click any value to edit it.'}
               </p>
             </div>
           </div>
-          <button 
+          <button
             onClick={onClose}
             className="p-2 hover:bg-black/5 rounded-full transition-colors"
           >
@@ -61,7 +124,7 @@ export const DuplicateComparisonModal: React.FC<DuplicateComparisonModalProps> =
                 <span className="font-bold text-sm">Row {row1.id + 1} {isPrice ? '(Reference)' : '(Original)'}</span>
                 {!isPrice && (
                   <div className="flex gap-2">
-                    <button 
+                    <button
                       onClick={() => onKeep(row1.id)}
                       className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 text-white rounded-lg text-[10px] font-bold uppercase tracking-wider hover:bg-emerald-600 transition-all shadow-sm"
                     >
@@ -76,7 +139,7 @@ export const DuplicateComparisonModal: React.FC<DuplicateComparisonModalProps> =
               <div className="flex items-center justify-between mb-2">
                 <span className="font-bold text-sm">Row {row2.id + 1} {isPrice ? '(Outlier)' : '(Duplicate)'}</span>
                 <div className="flex gap-2">
-                  <button 
+                  <button
                     onClick={() => onKeep(row2.id)}
                     className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 text-white rounded-lg text-[10px] font-bold uppercase tracking-wider hover:bg-emerald-600 transition-all shadow-sm"
                   >
@@ -84,7 +147,7 @@ export const DuplicateComparisonModal: React.FC<DuplicateComparisonModalProps> =
                     {isPrice ? 'Keep Price' : 'Keep This'}
                   </button>
                   {!isPrice && (
-                    <button 
+                    <button
                       onClick={() => onRemove(row2.id)}
                       className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-500 text-white rounded-lg text-[10px] font-bold uppercase tracking-wider hover:bg-rose-600 transition-all shadow-sm"
                     >
@@ -108,12 +171,8 @@ export const DuplicateComparisonModal: React.FC<DuplicateComparisonModalProps> =
                   <div className={`py-3 px-2 text-xs font-medium border-b border-black/5 flex items-center ${isDifferent ? (isPrice && isPriceField ? 'bg-indigo-50/50 text-indigo-700' : 'bg-amber-50/50 text-amber-700') : 'text-black/60'}`}>
                     {field.label}
                   </div>
-                  <div className={`py-3 px-4 text-sm border-b border-black/5 ${isDifferent ? (isPrice && isPriceField ? 'bg-indigo-50/30 font-bold' : 'bg-amber-50/30 font-medium') : ''}`}>
-                    {val1 === undefined || val1 === null || val1 === '' ? <span className="text-black/20 italic">Empty</span> : String(val1)}
-                  </div>
-                  <div className={`py-3 px-4 text-sm border-b border-black/5 ${isDifferent ? (isPrice && isPriceField ? 'bg-indigo-50/30 font-bold' : 'bg-amber-50/30 font-medium') : ''}`}>
-                    {val2 === undefined || val2 === null || val2 === '' ? <span className="text-black/20 italic">Empty</span> : String(val2)}
-                  </div>
+                  {renderCell(row1, field.key, isDifferent, isPriceField)}
+                  {renderCell(row2, field.key, isDifferent, isPriceField)}
                 </React.Fragment>
               );
             })}
@@ -121,7 +180,7 @@ export const DuplicateComparisonModal: React.FC<DuplicateComparisonModalProps> =
         </div>
 
         <div className="p-8 bg-black/[0.02] border-t border-black/5 flex justify-end gap-4">
-          <button 
+          <button
             onClick={onClose}
             className="px-6 py-2.5 rounded-full text-sm font-medium text-black/40 hover:text-black transition-colors"
           >
@@ -129,7 +188,7 @@ export const DuplicateComparisonModal: React.FC<DuplicateComparisonModalProps> =
           </button>
           {!isPrice ? (
             <>
-              <button 
+              <button
                 onClick={() => {
                   onRemove(row2.id);
                   onClose();
@@ -138,7 +197,7 @@ export const DuplicateComparisonModal: React.FC<DuplicateComparisonModalProps> =
               >
                 Remove Duplicate Row
               </button>
-              <button 
+              <button
                 onClick={() => {
                   onKeep(row2.id);
                   onClose();
@@ -149,7 +208,7 @@ export const DuplicateComparisonModal: React.FC<DuplicateComparisonModalProps> =
               </button>
             </>
           ) : (
-            <button 
+            <button
               onClick={() => {
                 onKeep(row2.id);
                 onClose();
