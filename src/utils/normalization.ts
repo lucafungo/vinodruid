@@ -84,7 +84,7 @@ export function normalizeBottleSize(rawSize: string | number): number | null {
  * "2021" -> "2021"
  */
 export function normalizeVintage(rawVintage: string | number): string {
-  if (rawVintage === undefined || rawVintage === null || rawVintage === '') return 'NV';
+  if (rawVintage === undefined || rawVintage === null || rawVintage === '') return '';
   
   const str = String(rawVintage).toUpperCase().trim();
   

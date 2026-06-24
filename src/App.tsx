@@ -3320,9 +3320,22 @@ export default function App() {
                           })}
                            <td className="px-3 py-1 border-l border-[#dadce0] sticky right-0 bg-white group-hover:bg-[#f1f3f4] z-10">
                             <div className="flex items-center justify-center gap-2">
-                              {row.isDuplicate ? (
+                              {row.status === 'red' ? (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const firstErrorField = row.fieldErrors?.[0] || (getCurrentSchema().fields[0]?.key || 'listing_wine_name');
+                                    startEditingCell(row.id, firstErrorField);
+                                  }}
+                                  title={row.errors.join('\n')}
+                                  className="bg-rose-600 text-white px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider hover:bg-rose-700 transition-colors flex items-center gap-1"
+                                >
+                                  <AlertCircle size={10} />
+                                  Fix Issue
+                                </button>
+                              ) : row.isDuplicate ? (
                                 <div className="flex flex-col gap-1">
-                                  <button 
+                                  <button
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       setComparingDuplicate({ row1: row.duplicateOf!, row2: row.id });
@@ -3333,7 +3346,7 @@ export default function App() {
                                     <HelpCircle size={10} />
                                     Compare
                                   </button>
-                                  <button 
+                                  <button
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       handleDeleteRow(row.id);
@@ -3344,7 +3357,7 @@ export default function App() {
                                     <Trash2 size={10} />
                                     Remove
                                   </button>
-                                  <button 
+                                  <button
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       handleIgnoreDuplicate(row.id);
@@ -3394,20 +3407,6 @@ export default function App() {
                                     Keep
                                   </button>
                                 </div>
-                              ) : row.status === 'red' ? (
-                                <button 
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    // Try to find the first field with an error, fallback to first field in schema
-                                    const firstErrorField = row.fieldErrors?.[0] || (getCurrentSchema().fields[0]?.key || 'listing_wine_name');
-                                    startEditingCell(row.id, firstErrorField);
-                                  }}
-                                  title={row.errors.join('\n')}
-                                  className="bg-rose-600 text-white px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider hover:bg-rose-700 transition-colors flex items-center gap-1"
-                                >
-                                  <AlertCircle size={10} />
-                                  Fix Issue
-                                </button>
                               ) : (
                                 <div 
                                   className="flex items-center justify-center w-full h-full cursor-help"
