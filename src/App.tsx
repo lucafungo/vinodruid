@@ -938,7 +938,7 @@ export default function App() {
    */
   const getCurrentSchema = () => {
     const base = SCHEMAS[dataType];
-    if (dataType !== 'inventory' && dataType !== 'client_reserves' && dataType !== 'sales_orders') return base;
+    if (dataType !== 'inventory' && dataType !== 'client_reserves' && dataType !== 'sales_orders' && dataType !== 'purchase_orders') return base;
     // LWIN and descriptive fields are validated per-row in processData.
     // The mapper only needs to know which columns exist — lwin7 is optional here.
     return {
@@ -1042,7 +1042,7 @@ export default function App() {
     setValidationError(null);
     setCurrentSessionId(null);
 
-    if ((dataType === 'inventory' || dataType === 'client_reserves' || dataType === 'sales_orders') && masterCellars.length === 0) {
+    if ((dataType === 'inventory' || dataType === 'client_reserves' || dataType === 'sales_orders' || dataType === 'purchase_orders') && masterCellars.length === 0) {
       setValidationError("Please load your Cellars first. This import type requires a Master Cellar List for validation.");
       return;
     }
@@ -1136,7 +1136,7 @@ export default function App() {
     setHasAutoFixed(false);
     
     // Check if we should auto-calculate anything
-    const hasInventoryMappings = dataType === 'inventory' || dataType === 'client_reserves' || dataType === 'sales_orders';
+    const hasInventoryMappings = dataType === 'inventory' || dataType === 'client_reserves' || dataType === 'sales_orders' || dataType === 'purchase_orders';
     const canCalc = hasInventoryMappings && (
       (newMapping['case_size'] && newMapping['case_quantity']) || 
       (newMapping['total_quantity'] && newMapping['case_size']) ||
@@ -1587,14 +1587,14 @@ export default function App() {
       const caseQty = parseFloat(getVal('case_quantity'));
       const totalQty = parseFloat(getVal('total_quantity'));
 
-      if (!isNaN(caseSize) && !isNaN(caseQty) && (isNaN(totalQty) || !getVal('total_quantity')) && dataType !== 'sales_orders') {
+      if (!isNaN(caseSize) && !isNaN(caseQty) && (isNaN(totalQty) || !getVal('total_quantity')) && dataType !== 'sales_orders' && dataType !== 'purchase_orders') {
         setVal('total_quantity', caseSize * caseQty, `Calculated: Case Size (${caseSize}) × Case Quantity (${caseQty}) = ${caseSize * caseQty}`);
       } else if (!isNaN(totalQty) && !isNaN(caseSize) && (isNaN(caseQty) || !getVal('case_quantity')) && caseSize > 0) {
         setVal('case_quantity', totalQty / caseSize, `Calculated: Total Quantity (${totalQty}) ÷ Case Size (${caseSize}) = ${totalQty / caseSize}`);
       }
 
       // 3. Financial Calculations
-      const priceField = dataType === 'client_reserves' ? 'case_cost_price' : 'exc_vat_case';
+      const priceField = (dataType === 'client_reserves' || dataType === 'purchase_orders') ? 'case_cost_price' : 'exc_vat_case';
       const unitPrice = normalizeCurrency(getVal(priceField)).value;
       const totalValue = normalizeCurrency(getVal('total')).value;
       const qty = parseFloat(getVal('total_quantity')) || totalQty;
@@ -2334,7 +2334,7 @@ export default function App() {
       });
 
       // Post-loop LWIN Validation
-      if (dataType === 'inventory' || dataType === 'client_reserves' || dataType === 'sales_orders') {
+      if (dataType === 'inventory' || dataType === 'client_reserves' || dataType === 'sales_orders' || dataType === 'purchase_orders') {
         const lwinVal = result['lwin7'];
         const isLwinMissing = !lwinVal || String(lwinVal).trim() === '';
 
@@ -2360,7 +2360,7 @@ export default function App() {
       }
 
       // --- Master Data Validation ---
-      if ((dataType === 'inventory' || dataType === 'client_reserves' || dataType === 'sales_orders') && result['cellar_name']) {
+      if ((dataType === 'inventory' || dataType === 'client_reserves' || dataType === 'sales_orders' || dataType === 'purchase_orders') && result['cellar_name']) {
         const cellarName = String(result['cellar_name']).trim();
         if (masterCellars.length > 0 && !masterCellars.includes(cellarName)) {
           result.status = 'red';
@@ -2370,7 +2370,7 @@ export default function App() {
         }
       }
 
-      if ((dataType === 'client_reserves' || dataType === 'sales_orders') && result['account_code']) {
+      if ((dataType === 'client_reserves' || dataType === 'sales_orders' || dataType === 'purchase_orders') && result['account_code']) {
         const accountCode = String(result['account_code']).trim();
         if (masterClients.length > 0 && !masterClients.includes(accountCode)) {
           result.status = 'red';
@@ -2419,6 +2419,9 @@ export default function App() {
       } else if (dataType === 'sales_orders') {
          duplicateFingerprint = ['so_number', 'lwin7', 'vintage', 'case_size', 'size']
           .map(k => String(result[k] || '')).join('|');
+      } else if (dataType === 'purchase_orders') {
+         duplicateFingerprint = ['po_number', 'lwin7', 'vintage', 'case_size', 'size']
+          .map(k => String(result[k] || '')).join('|');
       } else {
          duplicateFingerprint = ['lwin7', 'vintage', 'case_size', 'size', 'tax_status']
           .map(k => String(result[k] || '')).join('|');
@@ -2433,6 +2436,8 @@ export default function App() {
            result.errors.push('Suspect duplicate detected (Same LWIN, Vintage, Size, Tax, Quantities, Rot #)');
         } else if (dataType === 'sales_orders') {
            result.errors.push('Suspect duplicate detected (Same SO Number, LWIN, Vintage, Case Size, Bottle Size)');
+        } else if (dataType === 'purchase_orders') {
+           result.errors.push('Suspect duplicate detected (Same PO Number, LWIN, Vintage, Case Size, Bottle Size)');
         } else {
            result.errors.push('Suspect duplicate detected (Same LWIN, Vintage, Size, Tax Status)');
         }
@@ -3100,7 +3105,7 @@ export default function App() {
               fields={getCurrentSchema().fields}
               onComplete={handleMappingComplete}
               onCancel={goHome}
-              requireEitherOr={(['inventory', 'client_reserves', 'sales_orders'] as DataType[]).includes(dataType) ? ['lwin7', 'listing_wine_name'] : undefined}
+              requireEitherOr={(['inventory', 'client_reserves', 'sales_orders', 'purchase_orders'] as DataType[]).includes(dataType) ? ['lwin7', 'listing_wine_name'] : undefined}
             />
           )}
 
