@@ -6,7 +6,8 @@
       "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\lucaa\\\\OneDrive\\\\Dokumente\\\\vinoclean_-wine-data-onboarding-portal-old\" -Recurse -File | Select-Object -First 50 | ForEach-Object { $_.FullName })",
       "PowerShell(cd \"c:\\\\Users\\\\lucaa\\\\OneDrive\\\\Dokumente\\\\vinoclean_-wine-data-onboarding-portal-old\"; $data = Get-Content \"src\\\\data\\\\region.json\" | ConvertFrom-Json; Write-Host \"Total rows: $\\($data.Count\\)\"; $data | Group-Object Type | Select-Object Name, Count)",
       "PowerShell(if \\(-not \\(Test-Path \"c:\\\\Users\\\\lucaa\\\\OneDrive\\\\Dokumente\\\\vinoclean_-wine-data-onboarding-portal-old\\\\TECHNICAL_DESCRIPTION.md\"\\)\\) { New-Item -ItemType File \"c:\\\\Users\\\\lucaa\\\\OneDrive\\\\Dokumente\\\\vinoclean_-wine-data-onboarding-portal-old\\\\TECHNICAL_DESCRIPTION.md\" | Out-Null }; Write-Host \"done\")",
-      "PowerShell(Remove-Item \"c:\\\\Users\\\\lucaa\\\\OneDrive\\\\Dokumente\\\\vinoclean_-wine-data-onboarding-portal-old\\\\src\\\\data\\\\region.json\" -Confirm:$false)"
+      "PowerShell(Remove-Item \"c:\\\\Users\\\\lucaa\\\\OneDrive\\\\Dokumente\\\\vinoclean_-wine-data-onboarding-portal-old\\\\src\\\\data\\\\region.json\" -Confirm:$false)",
+      "Bash(npm install *)"
     ],
     "additionalDirectories": [
       "c:\\Users\\lucaa\\.claude\\projects\\c--Users-lucaa-OneDrive-Dokumente-vinoclean--wine-data-onboarding-portal-old\\memory",

@@ -10,6 +10,7 @@ import { RulesModal } from './components/RulesModal';
 import { RowEditor } from './components/RowEditor';
 import { CellarAutocomplete } from './components/CellarAutocomplete';
 import { DuplicateComparisonModal } from './components/DuplicateComparisonModal';
+import { AddLocationModal } from './components/AddLocationModal';
 import { AiFixReviewModal } from './components/AiFixReviewModal';
 
 // --- Types ---
@@ -225,18 +226,19 @@ const SCHEMAS: Record<DataType, { label: string, fields: { key: string, label: s
     label: 'Trade Clients',
     fields: [
       { key: 'account_code', label: 'Account Code', required: true },
-      { 
-        key: 'title', 
-        label: 'Title', 
+      { key: 'company_name', label: 'Company Name', required: true },
+      {
+        key: 'title',
+        label: 'Title',
         required: false,
         options: [
-          'Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Brigadier', 'Captain', 'Count', 'H.H.', 'HRH Prince', 
-          'Lady', 'PhD', 'Professor', 'Sheikh', 'Sir', 'Master', 'Honourable', 'Major General', 
+          'Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Brigadier', 'Captain', 'Count', 'H.H.', 'HRH Prince',
+          'Lady', 'PhD', 'Professor', 'Sheikh', 'Sir', 'Master', 'Honourable', 'Major General',
           'Baron', 'Dato', 'Datuk', 'Datin', 'Tan Sri', 'Ambassador', 'Madam', 'Squire'
         ]
       },
-      { key: 'forename', label: 'Forename', required: true },
-      { key: 'surname', label: 'Surname', required: true },
+      { key: 'forename', label: 'Contact First Name', required: true },
+      { key: 'surname', label: 'Contact Surname', required: true },
       { key: 'email', label: 'Email', required: true },
       { key: 'address_line_1', label: 'Address Line 1', required: true },
       { key: 'address_line_2', label: 'Address Line 2', required: false },
@@ -289,6 +291,8 @@ const SCHEMAS: Record<DataType, { label: string, fields: { key: string, label: s
         ]
       },
       { key: 'company_name', label: 'Company Name', required: true },
+      { key: 'forename', label: 'Contact First Name', required: false },
+      { key: 'surname', label: 'Contact Surname', required: false },
       { key: 'main_contact_email', label: 'Main Contact Email', required: true },
       { key: 'address_line_1', label: 'Address Line 1', required: true },
       { key: 'address_line_2', label: 'Address Line 2', required: false },
@@ -509,6 +513,7 @@ export default function App() {
   // Master Data
   const [masterCellars, setMasterCellars] = useState<string[]>([]);
   const [masterClients, setMasterClients] = useState<string[]>([]);
+  const [showAddLocationModal, setShowAddLocationModal] = useState(false);
 
   useEffect(() => {
     fetch('/api/master/cellars')
@@ -745,6 +750,19 @@ export default function App() {
     }
   };
   
+  const handleAddLocation = (data: Record<string, string>) => {
+    const cellarName = data.cellar_name?.trim();
+    if (!cellarName) return;
+    const newList = Array.from(new Set([...masterCellars, cellarName]));
+    setMasterCellars(newList);
+    fetch('/api/master/cellars', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ names: newList }),
+    }).catch(e => console.error('Failed to save master cellars', e));
+    setShowAddLocationModal(false);
+  };
+
   // Inventory specific state
   const [regionRefData, setRegionRefData] = useState<any[]>([]);
 
@@ -1853,9 +1871,10 @@ export default function App() {
         const aiCalcVal = row[`__ai_calculated_${key}__`];
         if (aiCalcVal !== undefined && aiCalcVal !== null && String(aiCalcVal).trim() !== '') return aiCalcVal;
 
-        // Priority 3: Check the mapped original header
+        // Priority 3: Check the mapped original header (or constant value)
         const mappedKey = map[key];
         if (mappedKey) {
+          if (mappedKey.startsWith('__const__')) return mappedKey.slice(8);
           const val = row[mappedKey];
           if (val !== undefined && val !== null && String(val).trim() !== '') return val;
         }
@@ -2870,6 +2889,18 @@ export default function App() {
             <Trash2 size={10} />
           </button>
         )}
+        {type === 'cellars' && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowAddLocationModal(true);
+            }}
+            className="absolute -top-2 -left-2 p-1.5 bg-black text-white rounded-full shadow-lg opacity-0 group-hover/btn:opacity-100 transition-opacity hover:bg-black/70 z-10"
+            title="Add location manually"
+          >
+            <Plus size={10} />
+          </button>
+        )}
       </div>
     );
   };
@@ -3645,6 +3676,12 @@ export default function App() {
           />
         )}
       </AnimatePresence>
+      {showAddLocationModal && (
+        <AddLocationModal
+          onSave={handleAddLocation}
+          onClose={() => setShowAddLocationModal(false)}
+        />
+      )}
       </main>
 
       <RulesModal 

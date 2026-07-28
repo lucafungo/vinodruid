@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowRight, Check, Sparkles, Calculator } from 'lucide-react';
+import { ArrowRight, Check, Sparkles, Calculator, Hash, Table2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface SchemaMapperProps {
@@ -43,8 +43,34 @@ export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onC
     setMapping(autoMap);
   }, [headers, fields]);
 
+  const isConstantMode = (key: string) => mapping[key]?.startsWith('__const__') ?? false;
+  const getConstantValue = (key: string) => mapping[key]?.startsWith('__const__') ? mapping[key].slice(8) : '';
+
   const handleSelect = (fieldKey: string, header: string) => {
     setMapping(prev => ({ ...prev, [fieldKey]: header }));
+  };
+
+  const handleSetConstant = (fieldKey: string) => {
+    setMapping(prev => ({ ...prev, [fieldKey]: '__const__' }));
+  };
+
+  const handleConstantChange = (fieldKey: string, value: string) => {
+    setMapping(prev => ({ ...prev, [fieldKey]: `__const__${value}` }));
+  };
+
+  const handleBackToColumn = (fieldKey: string) => {
+    setMapping(prev => {
+      const next = { ...prev };
+      delete next[fieldKey];
+      return next;
+    });
+  };
+
+  const isFieldSatisfied = (key: string) => {
+    const val = mapping[key];
+    if (!val) return false;
+    if (val.startsWith('__const__')) return val.length > 8;
+    return true;
   };
 
   const totalQtyNoAutoCalc = !!fields.find(f => f.key === 'total_quantity')?.noAutoCalc;
@@ -54,10 +80,10 @@ export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onC
     (mapping['total_quantity'] || (mapping['case_size'] && mapping['case_quantity'])) && !mapping['total'];
   const hasInsight = canCalculateTotalQty || canCalculateCaseQty || canCalculateTotalValue;
 
-  const eitherOrSatisfied = !requireEitherOr || mapping[requireEitherOr[0]] || mapping[requireEitherOr[1]];
+  const eitherOrSatisfied = !requireEitherOr || isFieldSatisfied(requireEitherOr[0]) || isFieldSatisfied(requireEitherOr[1]);
 
   const isComplete = eitherOrSatisfied && fields.filter(f => f.required).every(f => {
-    if (mapping[f.key]) return true;
+    if (isFieldSatisfied(f.key)) return true;
     if (f.key === 'total_quantity' && canCalculateTotalQty) return true;
     if (f.key === 'case_quantity' && canCalculateCaseQty) return true;
     return false;
@@ -65,8 +91,9 @@ export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onC
 
   const requiredFields = fields.filter(f => f.required);
   const optionalFields = fields.filter(f => !f.required);
-  const mappedCount = fields.filter(f => mapping[f.key]).length;
-  const mappedRequired = requiredFields.filter(f => mapping[f.key] ||
+  const mappedCount = fields.filter(f => isFieldSatisfied(f.key)).length;
+  const mappedRequired = requiredFields.filter(f =>
+    isFieldSatisfied(f.key) ||
     (f.key === 'total_quantity' && canCalculateTotalQty) ||
     (f.key === 'case_quantity' && canCalculateCaseQty)
   ).length;
@@ -74,13 +101,14 @@ export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onC
   const renderField = (field: { key: string, label: string, required: boolean, hint?: string, noAutoCalc?: boolean }, isReq: boolean) => {
     const isCalculatable = (field.key === 'total_quantity' && canCalculateTotalQty) ||
                            (field.key === 'case_quantity' && canCalculateCaseQty);
-    const isMapped = !!mapping[field.key];
+    const constMode = isConstantMode(field.key);
+    const isMapped = constMode ? getConstantValue(field.key).length > 0 : !!mapping[field.key];
 
     return (
-      <div key={field.key} className="flex items-center gap-2 min-w-0">
-        <div className="w-40 flex-shrink-0 flex items-center gap-1 min-w-0">
+      <div key={field.key} className="flex items-start gap-2 min-w-0">
+        <div className="w-40 flex-shrink-0 flex items-center gap-1 min-w-0 pt-[6px]">
           {isMapped ? (
-            <Check size={9} className="text-emerald-500 flex-shrink-0" />
+            <Check size={9} className={`flex-shrink-0 ${constMode ? 'text-violet-500' : 'text-emerald-500'}`} />
           ) : isCalculatable ? (
             <Calculator size={9} className="text-sky-500 flex-shrink-0" />
           ) : (
@@ -90,29 +118,63 @@ export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onC
             {field.label}
           </span>
         </div>
-        <div className="flex-1 min-w-0 relative">
-          <select
-            value={mapping[field.key] || (isCalculatable && !isMapped ? '__ai_calculated__' : '')}
-            onChange={(e) => handleSelect(field.key, e.target.value)}
-            className={`w-full text-[11px] border rounded-md px-2 py-[5px] focus:outline-none focus:ring-1 focus:ring-black/10 cursor-pointer transition-colors ${
-              isMapped
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                : isCalculatable && !isMapped
-                ? 'bg-sky-50 border-sky-200 text-sky-700'
-                : 'bg-black/[0.02] border-black/10 text-black/70'
-            }`}
-          >
-            {isCalculatable && !isMapped ? (
-              <option value="__ai_calculated__">✨ Auto-calculated</option>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1">
+            {constMode ? (
+              <>
+                <input
+                  type="text"
+                  placeholder="value for all rows…"
+                  value={getConstantValue(field.key)}
+                  onChange={e => handleConstantChange(field.key, e.target.value)}
+                  className="flex-1 min-w-0 text-[11px] border border-violet-200 bg-violet-50 text-violet-800 rounded-md px-2 py-[5px] outline-none focus:ring-1 focus:ring-violet-300 placeholder:text-violet-300"
+                />
+                <button
+                  onClick={() => handleBackToColumn(field.key)}
+                  title="Map to a column instead"
+                  className="flex-shrink-0 flex items-center gap-0.5 text-[9px] text-black/30 hover:text-black/60 transition-colors"
+                >
+                  <Table2 size={9} />
+                </button>
+              </>
             ) : (
-              <option value="">— unmapped —</option>
+              <>
+                <select
+                  value={mapping[field.key] || (isCalculatable && !mapping[field.key] ? '__ai_calculated__' : '')}
+                  onChange={(e) => handleSelect(field.key, e.target.value)}
+                  className={`flex-1 min-w-0 text-[11px] border rounded-md px-2 py-[5px] focus:outline-none focus:ring-1 focus:ring-black/10 cursor-pointer transition-colors ${
+                    isMapped
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                      : isCalculatable && !mapping[field.key]
+                      ? 'bg-sky-50 border-sky-200 text-sky-700'
+                      : 'bg-black/[0.02] border-black/10 text-black/70'
+                  }`}
+                >
+                  {isCalculatable && !mapping[field.key] ? (
+                    <option value="__ai_calculated__">✨ Auto-calculated</option>
+                  ) : (
+                    <option value="">— unmapped —</option>
+                  )}
+                  {headers.map(h => (
+                    <option key={h} value={h}>{h}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => handleSetConstant(field.key)}
+                  title="Fill all rows with a fixed value"
+                  className="flex-shrink-0 flex items-center gap-0.5 text-[9px] text-black/25 hover:text-violet-500 transition-colors"
+                >
+                  <Hash size={9} />
+                </button>
+              </>
             )}
-            {headers.map(h => (
-              <option key={h} value={h}>{h}</option>
-            ))}
-          </select>
-          {field.hint && (
-            <span className="absolute top-full left-0 mt-0.5 text-[9px] text-black/35 whitespace-nowrap leading-none">{field.hint}</span>
+          </div>
+          {field.hint && !constMode && (
+            <span className="mt-0.5 block text-[9px] text-black/35 leading-none">{field.hint}</span>
+          )}
+          {constMode && (
+            <span className="mt-0.5 block text-[9px] text-violet-400 leading-none">same value for every row</span>
           )}
         </div>
       </div>
@@ -140,6 +202,9 @@ export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onC
               <Calculator size={9} /> Auto-Calc
             </span>
           )}
+          <span className="text-[9px] font-bold uppercase tracking-widest bg-violet-50 text-violet-600 px-2 py-1 rounded-full flex items-center gap-1">
+            <Hash size={9} /> Constant
+          </span>
         </div>
       </div>
 
