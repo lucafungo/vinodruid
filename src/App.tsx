@@ -1874,7 +1874,7 @@ export default function App() {
         // Priority 3: Check the mapped original header (or constant value)
         const mappedKey = map[key];
         if (mappedKey) {
-          if (mappedKey.startsWith('__const__')) return mappedKey.slice(8);
+          if (mappedKey.startsWith('__const__')) return mappedKey.slice(9);
           const val = row[mappedKey];
           if (val !== undefined && val !== null && String(val).trim() !== '') return val;
         }
@@ -3159,6 +3159,7 @@ export default function App() {
               onComplete={handleMappingComplete}
               onCancel={goHome}
               requireEitherOr={(['inventory', 'client_reserves', 'sales_orders', 'purchase_orders'] as DataType[]).includes(dataType) ? ['lwin7', 'listing_wine_name'] : undefined}
+              previewRows={rawData.slice(0, 4)}
             />
           )}
 

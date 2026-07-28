@@ -8,9 +8,10 @@ interface SchemaMapperProps {
   onComplete: (mapping: Record<string, string>) => void;
   onCancel: () => void;
   requireEitherOr?: [string, string];
+  previewRows?: Record<string, any>[];
 }
 
-export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onComplete, onCancel, requireEitherOr }) => {
+export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onComplete, onCancel, requireEitherOr, previewRows = [] }) => {
   const [mapping, setMapping] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -44,7 +45,7 @@ export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onC
   }, [headers, fields]);
 
   const isConstantMode = (key: string) => mapping[key]?.startsWith('__const__') ?? false;
-  const getConstantValue = (key: string) => mapping[key]?.startsWith('__const__') ? mapping[key].slice(8) : '';
+  const getConstantValue = (key: string) => mapping[key]?.startsWith('__const__') ? mapping[key].slice(9) : '';
 
   const handleSelect = (fieldKey: string, header: string) => {
     setMapping(prev => ({ ...prev, [fieldKey]: header }));
@@ -69,7 +70,7 @@ export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onC
   const isFieldSatisfied = (key: string) => {
     const val = mapping[key];
     if (!val) return false;
-    if (val.startsWith('__const__')) return val.length > 8;
+    if (val.startsWith('__const__')) return val.length > 9;
     return true;
   };
 
@@ -176,6 +177,20 @@ export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onC
           {constMode && (
             <span className="mt-0.5 block text-[9px] text-violet-400 leading-none">same value for every row</span>
           )}
+          {!constMode && !isCalculatable && mapping[field.key] && previewRows.length > 0 && (() => {
+            const col = mapping[field.key];
+            const vals = previewRows
+              .map(r => String(r[col] ?? '').trim())
+              .filter(v => v !== '');
+            if (vals.length === 0) return null;
+            const display = vals
+              .slice(0, 4)
+              .map(v => v.length > 18 ? v.slice(0, 17) + '…' : v)
+              .join(' · ');
+            return (
+              <span className="mt-0.5 block text-[9px] text-black/30 leading-none truncate">{display}</span>
+            );
+          })()}
         </div>
       </div>
     );
