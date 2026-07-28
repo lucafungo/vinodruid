@@ -2251,7 +2251,7 @@ export default function App() {
            // Since we marked it required=true, the empty check handles it.
            result[field.key] = rawValue;
         }
-        else if (field.key === 'cost' || field.key === 'total' || field.key === 'price' || field.key.startsWith('exc_vat')) {
+        else if (field.key === 'cost' || field.key === 'total' || field.key === 'price' || field.key.startsWith('exc_vat') || field.key === 'case_cost_price' || field.key === 'case_selling_price') {
           const normPrice = normalizeCurrency(rawValue);
           if (normPrice.value === null && !isMissing) {
             result[field.key] = rawValue; // Keep original value
@@ -2263,7 +2263,7 @@ export default function App() {
             result[field.key] = normPrice.value;
           }
         } 
-        else if (['abv', 'case_size', 'case_quantity', 'total_quantity'].includes(field.key)) {
+        else if (['abv', 'case_size', 'case_quantity', 'total_quantity', 'exchange_rate'].includes(field.key)) {
           const val = parseFloat(String(rawValue).replace(/[^0-9.]/g, ''));
           result[field.key] = isNaN(val) ? (isMissing ? '' : rawValue) : val;
           if (isNaN(val) && !isMissing) {
@@ -2312,6 +2312,28 @@ export default function App() {
            if (!isMissing && /[^\p{L}0-9\s\-,.']/u.test(val)) {
              result.status = 'red';
              result.errors.push(`Cellar Name contains invalid characters: '${val}'`);
+             hasError = true;
+             result.fieldErrors.push(field.key);
+           }
+           result[field.key] = val;
+        }
+        // Supplier name: same rules as company name
+        else if (field.key === 'supplier_name') {
+           const val = String(rawValue || '').trim();
+           if (!isMissing && /[^\p{L}0-9\s\-.,''()&\/]/u.test(val)) {
+             result.status = 'red';
+             result.errors.push(`Supplier contains invalid characters: '${val}'`);
+             hasError = true;
+             result.fieldErrors.push(field.key);
+           }
+           result[field.key] = val;
+        }
+        // PO number: alphanumeric plus hyphens, underscores, slashes, dots
+        else if (field.key === 'po_number') {
+           const val = String(rawValue || '').trim();
+           if (!isMissing && /[^A-Za-z0-9\s\-_\/.]/.test(val)) {
+             result.status = 'red';
+             result.errors.push(`PO Number contains invalid characters: '${val}'`);
              hasError = true;
              result.fieldErrors.push(field.key);
            }
