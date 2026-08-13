@@ -9,53 +9,45 @@
 
 ---
 
-## Phase 0 — Complete & Test the App (5 sessions)
+## Phase 0 — Complete & Test the App (5 sessions) — ✅ DONE
 
-### Session 1 — Purchase Orders: schema & field design
-- Review the PO template file and agree the final field list
-- Define which fields are always required vs conditionally required (same LWIN/no-LWIN logic as SO)
-- Confirm: PO-specific fields (PO number, supplier, payment terms, delivery date, cost price, etc.)
-- Add `purchase_orders` to the `DataType` union and `SCHEMAS` definition in App.tsx
-- Add PO to the home screen data type selector (tile + description)
-- No processing logic yet — just schema and entry point
+### Session 1 — Purchase Orders: schema & field design ✅
+- PO field list agreed and implemented: PO number, supplier account code, tax status, cost price, selling price, quantities (case/total), dates (created/invoiced/delivery), payment status, invoice status, delivery status, supplier invoice ref, pre-advice ref
+- `purchase_orders` added to `DataType` union and `SCHEMAS` in App.tsx
+- PO tile added to home screen
 
-### Session 2 — Purchase Orders: upload, mapping, LWIN logic
-- Wire up the upload → map flow for purchase_orders
-- Apply `requireEitherOr` in SchemaMapper (same as inventory/SO/CR)
-- Extend `handleUpload` and `handleMappingComplete` to handle purchase_orders
-- Extend LWIN post-loop validation to purchase_orders
-- Extend master data validation: cellar check + account code check for PO
-- Extend duplicate fingerprint logic for purchase_orders
+### Session 2 — Purchase Orders: upload, mapping, LWIN logic ✅
+- Upload → map flow wired for purchase_orders
+- `requireEitherOr` applied in SchemaMapper
+- LWIN post-loop validation extended to purchase_orders
+- Master data validation: cellar check + account code check for PO
+- Duplicate fingerprint: `[po_number, lwin7, vintage, case_size, size]`
 
-### Session 3 — Purchase Orders: review screen, validation, edge cases
-- Extend `processData` field-level validation for PO-specific fields
-  - Numeric fields: quantities, prices
-  - Date fields: delivery date, payment date, order date
-  - Tax status (IB/DP) + price hint (same as SO)
-- Extend `handleCalculationSmartFix` for PO quantity/price calculations
-- Test PO import with a real file end-to-end
-- Verify export works for purchase_orders
-- Confirm session save/resume works for PO
+### Session 3 — Purchase Orders: review screen, validation, edge cases ✅
+- Full field-level validation for all PO fields (dates, quantities, prices, tax status)
+- `handleCalculationSmartFix` extended for PO quantity/price calculations
+- End-to-end test with real PO file passed
+- Export confirmed; session save/resume confirmed
 
-### Session 4 — Full regression test: all data types
-Test every data type with real files:
-- Inventory: with LWIN, without LWIN, mixed
-- Client Reserves: with LWIN, without LWIN, mixed
-- Sales Orders: full file with all fields
-- Purchase Orders: full file with all fields
-- Cellars: import a cellar list
-- Clients: import a clients list
-- Test session resume mid-flow for each type
-- Test "Reopen Session" on completed sessions
-- Test date normalisation with messy formats (1/2/25, Jan 2 2025, 2025-01-02, etc.)
-- Write a bug list — triage by severity (P1/P2/P3)
+### Session 4 — Full regression test: all data types ✅
+- All eight data types tested with Ashbourne Fine Wines demo files
+- Eight Excel test files generated covering every validation rule and error scenario
+- All critical bugs identified during testing were resolved
 
-### Session 5 — Bug fixes, polish, sign-off on local version
-- Fix all P1 bugs from Session 4
-- Fix P2 bugs if time allows
-- UI polish: anything confusing, broken layout, wrong labels
-- Verify master data (cellars, clients) validation works correctly across all types
-- App freeze: no new features after this session until Phase 3 is live
+### Session 5 — Bug fixes, polish, sign-off on local version ✅
+Bugs fixed:
+- No-LWIN required fields corrected: code now requires Producer, Country, Region (not Wine Type) to match the documented rules in RulesModal
+- Client reserves duplicate detection: rows with missing account code are no longer incorrectly flagged as duplicates
+- Review Changes button no longer clears ignored duplicate and price warning decisions
+
+Features added during testing:
+- Per-row delete button in the grid (hover to reveal)
+- Duplicate review queue: "Review Duplicates (N)" button steps through all flagged duplicates one by one
+- Price review queue: "Review Prices (N)" button steps through all price outliers one by one
+- Both queues show a progress counter and "End Review" / "X remaining" badge in the modal
+- Download all completed files as a ZIP (JSZip, lazy-loaded)
+
+App is stable and frozen. Phase 1 begins next.
 
 ---
 
@@ -324,11 +316,11 @@ Each session covers one area of operations: the process is documented and then w
 
 | Week | Session | Phase | Deliverable |
 |---|---|---|---|
-| 1 | 1 | 0 | PO schema + home screen entry point |
-| 2 | 2 | 0 | PO upload → map → LWIN logic |
-| 3 | 3 | 0 | PO review + validation + export |
-| 4 | 4 | 0 | Full regression test, bug list |
-| 5 | 5 | 0 | All bugs fixed, app stable & frozen |
+| 1 | 1 | 0 | ✅ PO schema + home screen entry point |
+| 2 | 2 | 0 | ✅ PO upload → map → LWIN logic |
+| 3 | 3 | 0 | ✅ PO review + validation + export |
+| 4 | 4 | 0 | ✅ Full regression test, all bugs fixed |
+| 5 | 5 | 0 | ✅ App stable, polished & frozen |
 | 6 | 6 | 1 | organisations + users tables |
 | 7 | 7 | 1 | org_id on all tables, all queries scoped |
 | 8 | 8 | 1 | Admin API endpoints |

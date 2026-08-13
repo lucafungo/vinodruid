@@ -11,7 +11,9 @@
       "Bash(find \"C:\\\\Users\\\\lucaa\\\\OneDrive\\\\Dokumente\\\\VinoClean test files\" -type f | sort)",
       "Read(//c/Users/lucaa/OneDrive/Dokumente/VinoClean test files/**)",
       "Bash(mkdir -p \"C:\\\\Users\\\\lucaa\\\\OneDrive\\\\Dokumente\\\\VinoClean test files\\\\demo test files\")",
-      "Bash(python \"C:\\\\Users\\\\lucaa\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-lucaa-OneDrive-Dokumente-vinoclean--wine-data-onboarding-portal-old\\\\e229b6af-c7ba-44a9-97f0-5ee373ce20aa\\\\scratchpad\\\\generate_test_files.py\")"
+      "Bash(python \"C:\\\\Users\\\\lucaa\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-lucaa-OneDrive-Dokumente-vinoclean--wine-data-onboarding-portal-old\\\\e229b6af-c7ba-44a9-97f0-5ee373ce20aa\\\\scratchpad\\\\generate_test_files.py\")",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import docx\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\lucaa\\.claude\\projects\\c--Users-lucaa-OneDrive-Dokumente-vinoclean--wine-data-onboarding-portal-old\\memory",

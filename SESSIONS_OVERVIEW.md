@@ -10,22 +10,22 @@ Total: 24 sessions, approximately 6 months
 A session is a 4-hour work block, roughly once a week. Each one has a specific goal and by the end of it something concrete should be working or done. If a session runs long, the leftover work is well-defined and moves cleanly into the next one. The sequence is deliberate: the app gets finished and tested first, infrastructure comes after.
 
 
-## Phase 0 — Finish and Test the App (5 sessions)
+## Phase 0 — Finish and Test the App (5 sessions) — COMPLETE
 
 Session 1: Purchase Orders, fields and screen
-Set up the Purchase Orders data type. Agree the field list — PO number, supplier, payment terms, delivery date, cost prices, quantities. Add it to the home screen so it can be selected. No import logic in this session, just the structure.
+Set up the Purchase Orders data type. Agreed the field list: PO number, supplier, tax status, cost price, selling price, quantities, dates, status fields. Added to the home screen. Done.
 
 Session 2: Purchase Orders, upload and mapping
-Build the upload and column mapping flow for POs. Same wine identification logic as the other order types. Cellar and account code validation included.
+Upload and column mapping flow built for purchase orders. LWIN/no-LWIN logic applied. Cellar and account code validation wired in. Done.
 
 Session 3: Purchase Orders, validation and export
-Add the field-level validation rules for POs. Test a real file from start to finish. Check the CSV export and confirm sessions save and resume correctly.
+Full field-level validation for all PO fields. End-to-end test with a real file passed. CSV export confirmed. Session save and resume confirmed. Done.
 
 Session 4: Full test across all data types
-Test every data type with real files — Inventory, Client Reserves, Sales Orders, Purchase Orders, Cellars, Clients. Include files with a mix of wines with and without LWIN codes, and messy date formats. Write a bug list with priorities.
+Tested all eight data types using the Ashbourne Fine Wines demo files. Eight Excel test files generated covering every validation rule and error scenario. Bugs identified and fixed within the session. Done.
 
 Session 5: Bug fixes and app freeze
-Fix the critical bugs from Session 4. Clean up any UI issues. Once this session is done, no new features are added until the cloud phases are complete.
+All bugs from testing resolved. Key fixes: no-LWIN required fields corrected to match documented rules (Producer, Country, Region — not Wine Type), client reserves duplicate detection fixed for missing account codes, Review Changes no longer clears user decisions on duplicates and price warnings. Per-row delete button added. Duplicate and price review queues added. Download all completed files as ZIP added. App is stable and frozen pending Phase 1.
 
 
 ## Phase 1 — Multi-tenant Database (3 sessions)

@@ -19,11 +19,14 @@ The application follows a decoupled full-stack architecture with a Python backen
 - **Data Handling:** `papaparse`, `ExcelJS`, and `SheetJS` (`xlsx`) for client-side parsing of `.csv`, `.xls`, and `.xlsx` files.
 
 ### Database Schema
-The `WineOnboarding` database uses three tables:
+The `WineOnboarding` database uses six tables:
 
 - **`sessions`**: Tracks session metadata — data type, mapping configuration, status, and timestamps.
 - **`session_rows`**: Stores row-level data as JSON, linked to a session via `session_id`. Has a unique constraint on `(session_id, row_index)` and an index on `session_id`.
 - **`audit_trail`**: Records every manual and AI-assisted change with `old_value`, `new_value`, and `change_type`. Indexed on `session_id`.
+- **`master_cellars`**: Cellar name master list, populated when a Cellars file is imported and marked complete. Used to validate cellar names in inventory, reserves, and order imports.
+- **`master_clients`**: Account code master list, populated when a Clients or Suppliers file is imported. Used to validate account codes in reserves and order imports.
+- **`regions`**: Global wine geography reference table — 3,026 entries covering countries, regions, sub-regions, and communes. Seeded automatically on first server start.
 
 ---
 
@@ -42,9 +45,15 @@ The core validation logic in `App.tsx` processes every row through multiple laye
 1. **Sanitization:** Normalises LWIN7 codes (max 7 digits), cleans currency symbols, trims whitespace.
 2. **Referential Integrity:** Validates Region, Sub-Region, and Country against a geographical reference dataset.
 3. **Hierarchy Checking:** Verifies that geographical entities follow a logical parent-child relationship.
-4. **Business Rules:** Ensures mandatory fields are present and vintages fall within valid ranges (1850–2030 or `NV`).
+4. **Business Rules:** Ensures mandatory fields are present and vintages fall within valid ranges (1900–present or `NV`).
+5. **Per-row LWIN logic:** Rows without a valid LWIN7 require Wine Name, Producer, Vintage, Country, and Region as a substitute. Each row is validated independently — files may contain a mix of LWIN and no-LWIN rows.
+6. **Duplicate detection:** Each row is fingerprinted based on its data type. Flagged duplicates are surfaced via the comparison modal. For client reserves, a row with a missing account code is excluded from duplicate checking (client cannot be asserted).
+7. **Price anomaly detection:** Unit prices are compared against a per-wine median and a global dataset median. Outliers are flagged for review.
 
-### 3.4 AI-Powered Correction Flow
+### 3.4 Review Queues
+Two toolbar buttons appear when flagged rows are present: "Review Duplicates (N)" and "Review Prices (N)". Each steps through every flagged row one at a time in the DuplicateComparisonModal, showing a progress counter and advancing automatically after each keep/remove decision. User decisions on duplicates and price warnings survive a re-validation (Review Changes does not clear them).
+
+### 3.5 AI-Powered Correction Flow
 For rows with errors, the **AI Smart Fix** provides automated remediation via `POST /api/system/ai-fix`:
 - **Vintage Extraction:** Moves vintages found within title fields into the `vintage` column and cleans the original field.
 - **Field Alignment:** Detects and corrects column-shift errors where data is offset.

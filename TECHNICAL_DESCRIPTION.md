@@ -28,6 +28,7 @@ The frontend communicates with the backend exclusively through the REST API. Fil
 | Motion (Framer) | 12 | Animations |
 | ExcelJS | 4.4 | Excel (.xlsx) file parsing |
 | PapaParse | 5.5 | CSV parsing |
+| JSZip | 3.10 | ZIP file generation for bulk export |
 | Lucide React | 0.546 | Icons |
 
 ### Backend
@@ -52,7 +53,9 @@ The frontend communicates with the backend exclusively through the REST API. Fil
 | `src/components/RowEditor.tsx` | Row-level error correction modal |
 | `src/components/FileUploader.tsx` | Drag-and-drop file input with CSV/XLSX format detection |
 | `src/components/DateInput.tsx` | Free-text date entry with live preview, format normalisation, calendar picker |
-| `src/components/DuplicateComparisonModal.tsx` | Side-by-side comparison for resolving flagged duplicates |
+| `src/components/DuplicateComparisonModal.tsx` | Side-by-side comparison for resolving flagged duplicates and price mismatches; supports queue mode |
+| `src/components/AiFixReviewModal.tsx` | Diff view for AI auto-fix suggestions; user accepts or rejects per field |
+| `src/components/AddLocationModal.tsx` | In-app form to add a new cellar to the master list without leaving the review screen |
 | `src/components/CellarAutocomplete.tsx` | Autocomplete input backed by master_cellars list |
 | `src/components/RulesModal.tsx` | Validation rules reference panel |
 | `src/utils/normalization.ts` | Normalisation helpers: dates, bottle sizes, vintages, currencies |
@@ -120,8 +123,8 @@ For `inventory`, `client_reserves`, `sales_orders`, and `purchase_orders`, wine 
 
 | Row has | Validation |
 |---|---|
-| Valid LWIN7 (7-digit code) | LWIN accepted; wine name, type, country, region not required |
-| No LWIN | Wine name + vintage + wine type all required; row flagged red if any missing |
+| Valid LWIN7 (7-digit code) | LWIN accepted; wine name, producer, type, country, region not required |
+| No LWIN | Wine Name + Producer + Vintage + Country + Region all required; row flagged red if any are missing |
 | LWIN present but wrong format | Row flagged red: "LWIN7 must be exactly 7 digits" |
 
 A file can contain rows with and without LWINs — each is validated independently. The mapper requires that at least one of `lwin7` or `listing_wine_name` is mapped before the step can be completed.
@@ -157,6 +160,17 @@ A file can contain rows with and without LWINs — each is validated independent
 | Account code | Also checked against `master_clients` if master list is loaded |
 | Duplicates | Fingerprinted per data type; duplicates flagged with comparison modal |
 | Price anomalies | Outliers flagged against per-wine median and global dataset median |
+
+**Duplicate fingerprints per data type:**
+
+| Data type | Fingerprint fields |
+|---|---|
+| `inventory` | lwin7, vintage, case_size, size, tax_status, case_quantity, total_quantity, rotation_number |
+| `client_reserves` | same as inventory + account_code; if account_code is blank the row is skipped (can't assert per-client uniqueness) |
+| `sales_orders` | so_number, lwin7, vintage, case_size, size |
+| `purchase_orders` | po_number, lwin7, vintage, case_size, size |
+| `contacts / clients / suppliers` | account_code only |
+| `cellars` | cellar_name and cellar_code checked independently |
 
 ---
 
@@ -203,6 +217,23 @@ Sessions are persisted throughout the workflow:
 - **Soft-deleted** — disabled sessions are hidden in the UI but retained in the DB
 
 Session state is stored in a `fields` JSON blob on the `sessions` table: current step, file name, data type, column mapping, auto-fix logs, manual edit map, ignored duplicates, ignored price warnings.
+
+---
+
+## Review queues
+
+Two toolbar buttons appear in the review grid when flagged rows exist:
+
+- **Review Duplicates (N)** — steps through every row marked as a suspect duplicate, one at a time, in the `DuplicateComparisonModal`. Shows a progress badge ("X remaining"). Keep Both or Remove actions advance to the next item automatically.
+- **Review Prices (N)** — same flow for price outlier rows.
+
+Both queues use a `pendingQueueAdvance` flag + `useEffect` on `processedData` to advance only after React state has settled (keep/remove are async state mutations). Clicking "End Review" exits the queue at any point. User decisions (ignore duplicate, ignore price warning) are preserved if the user clicks Review Changes — they survive re-validation.
+
+---
+
+## Bulk export (completed sessions)
+
+The home screen shows a "Download All Completed (N files)" button when two or more data types have been marked complete. Clicking it generates a single ZIP file (`vinoclean_completed_exports.zip`) containing one CSV per completed data type, using JSZip loaded lazily on click.
 
 ---
 
