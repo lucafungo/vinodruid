@@ -11,6 +11,7 @@ interface DuplicateComparisonModalProps {
   onClose: () => void;
   onEdit?: (rowId: number, fieldKey: string, newValue: string) => void;
   type?: 'duplicate' | 'price';
+  queueInfo?: { remaining: number };
 }
 
 export const DuplicateComparisonModal: React.FC<DuplicateComparisonModalProps> = ({
@@ -21,9 +22,11 @@ export const DuplicateComparisonModal: React.FC<DuplicateComparisonModalProps> =
   onRemove,
   onClose,
   onEdit,
-  type = 'duplicate'
+  type = 'duplicate',
+  queueInfo,
 }) => {
   const isPrice = type === 'price';
+  const inQueue = !!queueInfo;
   const [editingCell, setEditingCell] = useState<{ rowId: number; fieldKey: string; value: string } | null>(null);
 
   const startEdit = (rowId: number, fieldKey: string, currentValue: any) => {
@@ -99,7 +102,14 @@ export const DuplicateComparisonModal: React.FC<DuplicateComparisonModalProps> =
               <AlertCircle size={24} />
             </div>
             <div>
-              <h2 className="text-2xl font-serif font-medium">{isPrice ? 'Compare Prices' : 'Compare Duplicates'}</h2>
+              <div className="flex items-center gap-3 mb-1">
+                <h2 className="text-2xl font-serif font-medium">{isPrice ? 'Compare Prices' : 'Compare Duplicates'}</h2>
+                {inQueue && (
+                  <span className={`text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-full ${isPrice ? 'bg-indigo-100 text-indigo-600' : 'bg-amber-100 text-amber-700'}`}>
+                    {queueInfo.remaining} remaining
+                  </span>
+                )}
+              </div>
               <p className="text-sm text-black/40">
                 {isPrice
                   ? 'Review this row against a reference entry to verify the price discrepancy. Click any value to edit it.'
@@ -184,7 +194,7 @@ export const DuplicateComparisonModal: React.FC<DuplicateComparisonModalProps> =
             onClick={onClose}
             className="px-6 py-2.5 rounded-full text-sm font-medium text-black/40 hover:text-black transition-colors"
           >
-            Close
+            {inQueue ? 'End Review' : 'Close'}
           </button>
           {!isPrice ? (
             <>

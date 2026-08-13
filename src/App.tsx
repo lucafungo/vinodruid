@@ -491,6 +491,8 @@ export default function App() {
     setEditingCell({ rowId, fieldKey });
   };
   const [comparingDuplicate, setComparingDuplicate] = useState<{ row1: number, row2: number } | null>(null);
+  const [reviewQueueType, setReviewQueueType] = useState<'duplicate' | 'price' | null>(null);
+  const [pendingQueueAdvance, setPendingQueueAdvance] = useState(false);
   const [isRulesModalOpen, setIsRulesModalOpen] = useState(false);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -1482,6 +1484,37 @@ export default function App() {
     setEditingRowId(null);
   };
 
+  const startDuplicateReview = () => {
+    const items = processedData.filter(r => r.isDuplicate && r.duplicateOf !== undefined);
+    if (items.length === 0) return;
+    setReviewQueueType('duplicate');
+    setComparingDuplicate({ row1: items[0].duplicateOf!, row2: items[0].id });
+  };
+
+  const startPriceReview = () => {
+    const items = processedData.filter(r => r.isPriceOutlier && r.priceOutlierRefRowId !== undefined);
+    if (items.length === 0) return;
+    setReviewQueueType('price');
+    setComparingDuplicate({ row1: items[0].priceOutlierRefRowId!, row2: items[0].id });
+  };
+
+  useEffect(() => {
+    if (!pendingQueueAdvance || !reviewQueueType) return;
+    setPendingQueueAdvance(false);
+    const items = reviewQueueType === 'duplicate'
+      ? processedData.filter(r => r.isDuplicate && r.duplicateOf !== undefined)
+      : processedData.filter(r => r.isPriceOutlier && r.priceOutlierRefRowId !== undefined);
+    if (items.length > 0) {
+      setComparingDuplicate({
+        row1: reviewQueueType === 'duplicate' ? items[0].duplicateOf! : items[0].priceOutlierRefRowId!,
+        row2: items[0].id,
+      });
+    } else {
+      setReviewQueueType(null);
+      setComparingDuplicate(null);
+    }
+  }, [processedData, pendingQueueAdvance, reviewQueueType]);
+
   const handleRevalidate = () => {
     setIsAiProcessing(true);
     // Simulate a brief re-validation delay for UX
@@ -1489,11 +1522,10 @@ export default function App() {
       // Treat current data as the new "original" source of truth
       setOriginalRawData(JSON.parse(JSON.stringify(rawData)));
       
-      // Clear all edit markers
+      // Clear edit markers — preserve ignored duplicates and price warnings
+      // as those were deliberate user decisions that should survive a re-validate
       setManualEditsMap({});
       setAutoFixedMap({});
-      setIgnoredDuplicates(new Set());
-      setIgnoredPriceWarnings(new Set());
       
       // Re-process with cleared markers and run calculations
       const processed = handleCalculationSmartFix(rawData, mapping, true);
@@ -2470,13 +2502,18 @@ export default function App() {
           .map(k => String(result[k] || '')).join('|');
       }
       
-      if (seenRows.has(duplicateFingerprint) && !currentIgnored.has(idx)) {
+      // For client_reserves: if account_code is missing we can't assert per-client uniqueness, so skip.
+      const skipDuplicateCheck = dataType === 'client_reserves' && !String(result['account_code'] || '').trim();
+
+      if (!skipDuplicateCheck && seenRows.has(duplicateFingerprint) && !currentIgnored.has(idx)) {
         result.isDuplicate = true;
         result.duplicateOf = seenRows.get(duplicateFingerprint);
         if (dataType === 'contacts' || dataType === 'private_clients' || dataType === 'trade_clients' || dataType === 'suppliers') {
            result.errors.push(`Duplicate Account Code detected: ${duplicateFingerprint}`);
-        } else if (dataType === 'inventory' || dataType === 'client_reserves') {
+        } else if (dataType === 'inventory') {
            result.errors.push('Suspect duplicate detected (Same LWIN, Vintage, Size, Tax, Quantities, Rot #)');
+        } else if (dataType === 'client_reserves') {
+           result.errors.push('Suspect duplicate detected (Same Account Code, LWIN, Vintage, Size, Tax, Quantities, Rot #)');
         } else if (dataType === 'sales_orders') {
            result.errors.push('Suspect duplicate detected (Same SO Number, LWIN, Vintage, Case Size, Bottle Size)');
         } else if (dataType === 'purchase_orders') {
@@ -2485,7 +2522,7 @@ export default function App() {
            result.errors.push('Suspect duplicate detected (Same LWIN, Vintage, Size, Tax Status)');
         }
         hasWarning = true; // Duplicates are warnings unless they also have errors
-      } else {
+      } else if (!skipDuplicateCheck) {
         seenRows.set(duplicateFingerprint, idx);
       }
 
@@ -3346,6 +3383,24 @@ export default function App() {
                           Undo Edit
                         </button>
                       )}
+                      {processedData.some(r => r.isDuplicate) && (
+                        <button
+                          onClick={startDuplicateReview}
+                          className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 transition-all active:scale-95"
+                        >
+                          <Copy size={12} />
+                          Review Duplicates ({processedData.filter(r => r.isDuplicate).length})
+                        </button>
+                      )}
+                      {processedData.some(r => r.isPriceOutlier) && (
+                        <button
+                          onClick={startPriceReview}
+                          className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 transition-all active:scale-95"
+                        >
+                          <Calculator size={12} />
+                          Review Prices ({processedData.filter(r => r.isPriceOutlier).length})
+                        </button>
+                      )}
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-3 h-3 rounded-full bg-rose-500"></div>
@@ -3526,6 +3581,13 @@ export default function App() {
                           })}
                            <td className="px-3 py-1 border-l border-[#dadce0] sticky right-0 bg-white group-hover:bg-[#f1f3f4] z-10">
                             <div className="flex items-center justify-center gap-2">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleDeleteRow(row.id); }}
+                                title="Remove this row"
+                                className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 p-0.5 rounded hover:bg-rose-100 text-black/20 hover:text-rose-500"
+                              >
+                                <X size={11} />
+                              </button>
                               {row.status === 'red' ? (
                                 <button
                                   onClick={(e) => {
@@ -3637,11 +3699,16 @@ export default function App() {
 
       <AnimatePresence>
         {comparingDuplicate !== null && (
-          <DuplicateComparisonModal 
+          <DuplicateComparisonModal
             row1={processedData.find(r => r.id === comparingDuplicate.row1)}
             row2={processedData.find(r => r.id === comparingDuplicate.row2)}
             type={processedData.find(r => r.id === comparingDuplicate.row2)?.isPriceOutlier ? 'price' : 'duplicate'}
             fields={SCHEMAS[dataType].fields}
+            queueInfo={reviewQueueType ? {
+              remaining: reviewQueueType === 'duplicate'
+                ? processedData.filter(r => r.isDuplicate).length
+                : processedData.filter(r => r.isPriceOutlier).length
+            } : undefined}
             onKeep={(id) => {
               const row = processedData.find(r => r.id === id);
               if (row?.isPriceOutlier) {
@@ -3649,18 +3716,29 @@ export default function App() {
               } else {
                 handleIgnoreDuplicate(id);
               }
-              setComparingDuplicate(null);
+              if (reviewQueueType) {
+                setPendingQueueAdvance(true);
+              } else {
+                setComparingDuplicate(null);
+              }
             }}
             onRemove={(id) => {
               handleDeleteRow(id);
-              setComparingDuplicate(null);
+              if (reviewQueueType) {
+                setPendingQueueAdvance(true);
+              } else {
+                setComparingDuplicate(null);
+              }
             }}
             onEdit={(rowId, fieldKey, newValue) => {
               const row = processedData.find(r => r.id === rowId);
               if (!row) return;
               handleRowUpdate({ ...row, [fieldKey]: newValue }, fieldKey);
             }}
-            onClose={() => setComparingDuplicate(null)}
+            onClose={() => {
+              setReviewQueueType(null);
+              setComparingDuplicate(null);
+            }}
           />
         )}
       </AnimatePresence>
