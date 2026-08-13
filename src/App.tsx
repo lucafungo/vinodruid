@@ -2387,8 +2387,10 @@ export default function App() {
 
             const missingFields: string[] = [];
             if (!isFieldPresent('listing_wine_name') && !isFieldPresent('display_wine_name')) missingFields.push('Wine Name');
+            if (!isFieldPresent('producer')) missingFields.push('Producer');
             if (!isFieldPresent('vintage')) missingFields.push('Vintage');
-            if (!isFieldPresent('type')) missingFields.push('Wine Type');
+            if (!isFieldPresent('country')) missingFields.push('Country');
+            if (!isFieldPresent('region')) missingFields.push('Region');
 
             if (missingFields.length > 0) {
                result.status = 'red';

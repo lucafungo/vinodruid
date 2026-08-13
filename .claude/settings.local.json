@@ -7,11 +7,16 @@
       "PowerShell(cd \"c:\\\\Users\\\\lucaa\\\\OneDrive\\\\Dokumente\\\\vinoclean_-wine-data-onboarding-portal-old\"; $data = Get-Content \"src\\\\data\\\\region.json\" | ConvertFrom-Json; Write-Host \"Total rows: $\\($data.Count\\)\"; $data | Group-Object Type | Select-Object Name, Count)",
       "PowerShell(if \\(-not \\(Test-Path \"c:\\\\Users\\\\lucaa\\\\OneDrive\\\\Dokumente\\\\vinoclean_-wine-data-onboarding-portal-old\\\\TECHNICAL_DESCRIPTION.md\"\\)\\) { New-Item -ItemType File \"c:\\\\Users\\\\lucaa\\\\OneDrive\\\\Dokumente\\\\vinoclean_-wine-data-onboarding-portal-old\\\\TECHNICAL_DESCRIPTION.md\" | Out-Null }; Write-Host \"done\")",
       "PowerShell(Remove-Item \"c:\\\\Users\\\\lucaa\\\\OneDrive\\\\Dokumente\\\\vinoclean_-wine-data-onboarding-portal-old\\\\src\\\\data\\\\region.json\" -Confirm:$false)",
-      "Bash(npm install *)"
+      "Bash(npm install *)",
+      "Bash(find \"C:\\\\Users\\\\lucaa\\\\OneDrive\\\\Dokumente\\\\VinoClean test files\" -type f | sort)",
+      "Read(//c/Users/lucaa/OneDrive/Dokumente/VinoClean test files/**)",
+      "Bash(mkdir -p \"C:\\\\Users\\\\lucaa\\\\OneDrive\\\\Dokumente\\\\VinoClean test files\\\\demo test files\")",
+      "Bash(python \"C:\\\\Users\\\\lucaa\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-lucaa-OneDrive-Dokumente-vinoclean--wine-data-onboarding-portal-old\\\\e229b6af-c7ba-44a9-97f0-5ee373ce20aa\\\\scratchpad\\\\generate_test_files.py\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\lucaa\\.claude\\projects\\c--Users-lucaa-OneDrive-Dokumente-vinoclean--wine-data-onboarding-portal-old\\memory",
-      "c:\\Users\\lucaa\\OneDrive\\Dokumente\\vinoclean_-wine-data-onboarding-portal-old"
+      "c:\\Users\\lucaa\\OneDrive\\Dokumente\\vinoclean_-wine-data-onboarding-portal-old",
+      "C:\\Users\\lucaa\\OneDrive\\Dokumente\\VinoClean test files"
     ]
   }
 }
