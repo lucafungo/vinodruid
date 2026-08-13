@@ -911,6 +911,39 @@ export default function App() {
     await handleLoadSession(sessionId);
   };
 
+  const handleDownloadAllCompleted = async () => {
+    const JSZip = (await import('jszip')).default;
+    const zip = new JSZip();
+
+    Object.keys(completedTasks).forEach((type) => {
+      const task = completedTasks[type];
+      const schema = SCHEMAS[type as DataType];
+      const headers = schema.fields.map(f => f.label).join(',');
+      const rows = task.data.map(row =>
+        schema.fields.map(field => {
+          let val = row[field.key];
+          if (typeof val === 'object' && val?.value !== undefined) val = `${val.currency} ${val.value}`;
+          const s = String(val || '');
+          return (s.includes(',') || s.includes('"') || s.includes('\n')) ? `"${s.replace(/"/g, '""')}"` : s;
+        }).join(',')
+      );
+      const csv = [headers, ...rows].join('\n');
+      const safeName = `${type}_${(task.fileName.split('.')[0] || type)}.csv`;
+      zip.file(safeName, csv);
+    });
+
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'vinoclean_completed_exports.zip';
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   const handleExportCompleted = (type: string) => {
     const task = completedTasks[type];
     if (!task) return;
@@ -3055,7 +3088,7 @@ export default function App() {
                   </div>
                 </div>
               </div>
-              <div className="flex justify-center mb-8">
+              <div className="flex justify-center gap-3 mb-8">
                 {!(getActiveSessionForType(dataType) || completedTasks[dataType]) && (
                   <button
                     onClick={handleDownloadTemplate}
@@ -3066,6 +3099,19 @@ export default function App() {
                     </div>
                     <p className="text-xs font-bold uppercase tracking-wider text-black/60 group-hover:text-black">
                       Download {SCHEMAS[dataType].label} Template
+                    </p>
+                  </button>
+                )}
+                {Object.keys(completedTasks).length >= 2 && (
+                  <button
+                    onClick={handleDownloadAllCompleted}
+                    className="group flex items-center gap-3 px-5 py-3 bg-emerald-50 border border-emerald-200 rounded-xl shadow-sm hover:border-emerald-300 hover:shadow-md transition-all"
+                  >
+                    <div className="p-2 bg-emerald-100 rounded-lg group-hover:bg-emerald-200 transition-colors">
+                      <Download size={16} className="text-emerald-700" />
+                    </div>
+                    <p className="text-xs font-bold uppercase tracking-wider text-emerald-700">
+                      Download All Completed ({Object.keys(completedTasks).length} files)
                     </p>
                   </button>
                 )}
