@@ -3665,7 +3665,7 @@ export default function App() {
                                       e.stopPropagation();
                                       handleDeleteRow(row.id);
                                     }}
-                                    title={`Suspect duplicate of row ${row.duplicateOf + 1}. Click to remove.`}
+                                    title={`Suspect duplicate of row ${(row.duplicateOf ?? 0) + 1}. Click to remove.`}
                                     className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider hover:bg-amber-200 transition-colors flex items-center gap-1 border border-amber-200 w-full justify-center"
                                   >
                                     <Trash2 size={10} />

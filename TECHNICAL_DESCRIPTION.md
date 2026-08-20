@@ -47,7 +47,8 @@ The frontend communicates with the backend exclusively through the REST API. Fil
 
 | File | Responsibility |
 |---|---|
-| `server.py` | FastAPI app, all API endpoints, DB schema creation and seeding |
+| `server.py` | FastAPI app, all API endpoints, DB schema creation and seeding, `get_org_id()` multi-tenancy helper |
+| `queries.sql` | SQL utility file — diagnostics, isolation tests, migration, maintenance |
 | `src/App.tsx` | Central application state, all data processing and validation logic |
 | `src/components/SchemaMapper.tsx` | Column mapping step — auto-detection, auto-calc hints, either/or gate |
 | `src/components/RowEditor.tsx` | Row-level error correction modal |
@@ -71,14 +72,16 @@ All tables are created automatically by `init_db()` on server start (`IF NOT EXI
 
 | Table | Description |
 |---|---|
-| `sessions` | One row per import session — file name, data type, status, current step, field mapping |
-| `session_rows` | All rows for a session stored as JSON blobs; `UNIQUE(session_id, row_index)` |
-| `audit_trail` | Field-level change log: old value, new value, change type, timestamp |
-| `master_cellars` | Cellar name master list — populated by importing a Cellars file |
-| `master_clients` | Account code master list — populated by importing a Clients file |
-| `regions` | Wine region/country reference table — global, 3,026 entries |
+| `organisations` | One row per tenant — name, type, default country/currency, disabled flag |
+| `users` | One row per user — linked to an organisation, stores alias, name, email, access level, disabled flag |
+| `sessions` | One row per import session — file name, data type, status, current step, field mapping. Scoped to `organisation_id`. |
+| `session_rows` | All rows for a session stored as JSON blobs; `UNIQUE(session_id, row_index)`. Scoped to `organisation_id`. |
+| `audit_trail` | Field-level change log: old value, new value, change type, timestamp. Scoped to `organisation_id`. |
+| `master_cellars` | Cellar name master list — populated by importing a Cellars file. Scoped to `organisation_id`. |
+| `master_clients` | Account code master list — populated by importing a Clients file. Scoped to `organisation_id`. |
+| `regions` | Wine region/country reference table — global, 3,026 entries. No `organisation_id`. |
 
-The `regions` table is seeded automatically on the first server start if the table is empty. Subsequent restarts skip seeding.
+The `regions` table is seeded automatically on the first server start if the table is empty. Subsequent restarts skip seeding. A default organisation (id=1) is also seeded on first start if the `organisations` table is empty.
 
 ---
 
@@ -308,7 +311,10 @@ Starts both servers via `concurrently`. Frontend at `:5173`, API at `:3000`.
 
 ### Environment (`.env`)
 ```
-DB_SERVER=WOLUCA\SQLEXPRESS
-DB_NAME=WineOnboarding
+SQL_SERVER=WOLUCA\SQLEXPRESS
+SQL_DATABASE=WineOnboarding
+DEV_ORG_ID=1
 ```
 Windows Authentication — no password required on a local machine.
+
+`DEV_ORG_ID` is the Phase 1 multi-tenancy bypass. Every request is treated as coming from the organisation with this ID. Change it and restart the server to switch organisation (useful for isolation testing). Phase 2 replaces this with real JWT extraction without touching any endpoint code.

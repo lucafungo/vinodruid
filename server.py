@@ -24,6 +24,11 @@ DATABASE = os.getenv("SQL_DATABASE", "WineOnboarding")
 DRIVER = os.getenv("SQL_DRIVER", "ODBC Driver 17 for SQL Server")
 
 
+def get_org_id(request: Request) -> int:
+    # Phase 1: reads DEV_ORG_ID from env. Phase 2: replaced with JWT extraction.
+    return int(os.getenv("DEV_ORG_ID", "1"))
+
+
 def make_conn_str(database: str) -> str:
     return f"DRIVER={{{DRIVER}}};SERVER={SERVER};DATABASE={database};Trusted_Connection=yes;"
 
@@ -84,12 +89,13 @@ def stringify(val: Any) -> str:
 
 
 def add_audit_log(conn, session_id: int, row_id: Optional[int], field_name: Optional[str],
-                  old_val: Any, new_val: Any, change_type: str):
+                  old_val: Any, new_val: Any, change_type: str, org_id: int = 1):
     try:
         conn.execute(
-            "INSERT INTO audit_trail (session_id, row_id, field_name, old_value, new_value, change_type) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, row_id, field_name, stringify(old_val), stringify(new_val), change_type)
+            "INSERT INTO audit_trail "
+            "(session_id, row_id, field_name, old_value, new_value, change_type, organisation_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, row_id, field_name, stringify(old_val), stringify(new_val), change_type, org_id)
         )
     except Exception as e:
         print(f"Audit log failed: {e}")
@@ -98,10 +104,59 @@ def add_audit_log(conn, session_id: int, row_id: Optional[int], field_name: Opti
 def init_db():
     ensure_database()
     with get_db() as conn:
+
+        # --- Phase 1: organisations & users ---
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='organisations' AND xtype='U')
+            CREATE TABLE organisations (
+                organisation_id INT IDENTITY(1,1) PRIMARY KEY,
+                name NVARCHAR(255) NOT NULL,
+                organisation_type_ref NVARCHAR(100),
+                default_country_ref NVARCHAR(100),
+                default_currency_ref NVARCHAR(10),
+                disabled BIT DEFAULT 0,
+                created DATETIME DEFAULT CURRENT_TIMESTAMP,
+                created_by INT,
+                updated DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_by INT
+            )
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='users' AND xtype='U')
+            CREATE TABLE users (
+                user_id INT IDENTITY(1,1) PRIMARY KEY,
+                organisation_id INT NOT NULL REFERENCES organisations(organisation_id),
+                alias NVARCHAR(100),
+                user_type NVARCHAR(50),
+                password NVARCHAR(255),
+                title NVARCHAR(50),
+                forename NVARCHAR(100),
+                surname NVARCHAR(100),
+                display_name NVARCHAR(200),
+                email NVARCHAR(255),
+                country_ref NVARCHAR(100),
+                user_access NVARCHAR(50),
+                disabled BIT DEFAULT 0,
+                created DATETIME DEFAULT CURRENT_TIMESTAMP,
+                created_by INT,
+                updated DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_by INT
+            )
+        """)
+
+        # Seed default organisation — only runs on a fresh DB
+        conn.execute("""
+            IF NOT EXISTS (SELECT 1 FROM organisations)
+            INSERT INTO organisations (name, organisation_type_ref, disabled)
+            VALUES (N'Default Organisation', N'wine_merchant', 0)
+        """)
+
+        # --- Core tables ---
         conn.execute("""
             IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='sessions' AND xtype='U')
             CREATE TABLE sessions (
                 id INT IDENTITY(1,1) PRIMARY KEY,
+                organisation_id INT NOT NULL DEFAULT 1,
                 session_type NVARCHAR(MAX) NOT NULL,
                 fields NVARCHAR(MAX),
                 status NVARCHAR(MAX) DEFAULT 'in_progress',
@@ -115,6 +170,7 @@ def init_db():
             CREATE TABLE session_rows (
                 id INT IDENTITY(1,1) PRIMARY KEY,
                 session_id INT NOT NULL,
+                organisation_id INT NOT NULL DEFAULT 1,
                 row_index INT NOT NULL,
                 row_content NVARCHAR(MAX) NOT NULL,
                 disabled INT DEFAULT 0,
@@ -128,6 +184,7 @@ def init_db():
             CREATE TABLE audit_trail (
                 id INT IDENTITY(1,1) PRIMARY KEY,
                 session_id INT NOT NULL,
+                organisation_id INT NOT NULL DEFAULT 1,
                 row_id INT,
                 field_name NVARCHAR(MAX),
                 old_value NVARCHAR(MAX),
@@ -141,6 +198,7 @@ def init_db():
             IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='master_cellars' AND xtype='U')
             CREATE TABLE master_cellars (
                 id INT IDENTITY(1,1) PRIMARY KEY,
+                organisation_id INT NOT NULL DEFAULT 1,
                 name NVARCHAR(MAX) NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
@@ -149,10 +207,21 @@ def init_db():
             IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='master_clients' AND xtype='U')
             CREATE TABLE master_clients (
                 id INT IDENTITY(1,1) PRIMARY KEY,
+                organisation_id INT NOT NULL DEFAULT 1,
                 code NVARCHAR(MAX) NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Add organisation_id to pre-existing tables (idempotent — no-op if column already exists)
+        for table in ("sessions", "session_rows", "audit_trail", "master_cellars", "master_clients"):
+            conn.execute(
+                f"IF NOT EXISTS (SELECT 1 FROM sys.columns "
+                f"WHERE object_id = OBJECT_ID('{table}') AND name = 'organisation_id') "
+                f"ALTER TABLE {table} ADD organisation_id INT NOT NULL DEFAULT 1"
+            )
+
+        # --- Indexes / constraints ---
         conn.execute("""
             IF NOT EXISTS (SELECT name FROM sys.indexes WHERE name='UQ_session_rows_session_row')
             ALTER TABLE session_rows
@@ -183,17 +252,22 @@ def init_db():
 init_db()
 
 
+# --- Sessions ---
+
 @app.get("/api/sessions")
-def list_sessions():
+def list_sessions(request: Request):
+    org_id = get_org_id(request)
     with get_db() as conn:
         cursor = conn.execute(
-            "SELECT * FROM sessions WHERE disabled = 0 ORDER BY created_at DESC"
+            "SELECT * FROM sessions WHERE disabled = 0 AND organisation_id = ? ORDER BY created_at DESC",
+            (org_id,)
         )
         return rows_as_dicts(cursor)
 
 
 @app.post("/api/sessions")
 async def create_session(request: Request):
+    org_id = get_org_id(request)
     body = await request.json()
     session_type = body.get("sessionType")
     rows = body.get("rows", [])
@@ -202,24 +276,27 @@ async def create_session(request: Request):
 
     with get_db() as conn:
         cursor = conn.execute(
-            "INSERT INTO sessions (session_type, fields, status) OUTPUT INSERTED.id VALUES (?, ?, ?)",
-            (session_type, json.dumps(fields), status)
+            "INSERT INTO sessions (session_type, fields, status, organisation_id) "
+            "OUTPUT INSERTED.id VALUES (?, ?, ?, ?)",
+            (session_type, json.dumps(fields), status, org_id)
         )
         session_id = cursor.fetchone()[0]
 
         for i, row_data in enumerate(rows):
             row_cursor = conn.execute(
-                "INSERT INTO session_rows (session_id, row_index, row_content) OUTPUT INSERTED.id VALUES (?, ?, ?)",
-                (session_id, i + 1, json.dumps(row_data))
+                "INSERT INTO session_rows (session_id, row_index, row_content, organisation_id) "
+                "OUTPUT INSERTED.id VALUES (?, ?, ?, ?)",
+                (session_id, i + 1, json.dumps(row_data), org_id)
             )
             row_id = row_cursor.fetchone()[0]
-            add_audit_log(conn, session_id, row_id, None, None, row_data, "CREATE")
+            add_audit_log(conn, session_id, row_id, None, None, row_data, "CREATE", org_id)
 
         return {"id": session_id}
 
 
 @app.patch("/api/sessions/{session_id}")
 async def update_session(session_id: int, request: Request):
+    org_id = get_org_id(request)
     body = await request.json()
     status = body.get("status")
     fields = body.get("fields")
@@ -240,8 +317,8 @@ async def update_session(session_id: int, request: Request):
 
     if updates:
         updates.append("updated_at = CURRENT_TIMESTAMP")
-        query = f"UPDATE sessions SET {', '.join(updates)} WHERE id = ?"
-        params.append(session_id)
+        query = f"UPDATE sessions SET {', '.join(updates)} WHERE id = ? AND organisation_id = ?"
+        params.extend([session_id, org_id])
         with get_db() as conn:
             conn.execute(query, tuple(params))
 
@@ -249,16 +326,20 @@ async def update_session(session_id: int, request: Request):
 
 
 @app.get("/api/sessions/{session_id}")
-def get_session(session_id: int):
+def get_session(session_id: int, request: Request):
+    org_id = get_org_id(request)
     with get_db() as conn:
-        cursor = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        cursor = conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND organisation_id = ?",
+            (session_id, org_id)
+        )
         session = row_as_dict(cursor)
         if not session:
             raise HTTPException(status_code=404, detail="Not found")
 
         cursor = conn.execute(
-            "SELECT * FROM session_rows WHERE session_id = ? ORDER BY row_index ASC",
-            (session_id,)
+            "SELECT * FROM session_rows WHERE session_id = ? AND organisation_id = ? ORDER BY row_index ASC",
+            (session_id, org_id)
         )
         db_rows = rows_as_dicts(cursor)
 
@@ -276,13 +357,15 @@ def get_session(session_id: int):
 
 @app.patch("/api/sessions/{session_id}/rows/{row_index}")
 async def update_row(session_id: int, row_index: int, request: Request):
+    org_id = get_org_id(request)
     body = await request.json()
     content = body.get("content")
 
     with get_db() as conn:
         cursor = conn.execute(
-            "SELECT id, row_content FROM session_rows WHERE session_id = ? AND row_index = ?",
-            (session_id, row_index)
+            "SELECT id, row_content FROM session_rows "
+            "WHERE session_id = ? AND row_index = ? AND organisation_id = ?",
+            (session_id, row_index, org_id)
         )
         row = row_as_dict(cursor)
         if not row:
@@ -293,21 +376,22 @@ async def update_row(session_id: int, row_index: int, request: Request):
 
         for key, val in content.items():
             if key not in excluded and val != old_content.get(key):
-                add_audit_log(conn, session_id, row["id"], key, old_content.get(key), val, "UPDATE")
+                add_audit_log(conn, session_id, row["id"], key, old_content.get(key), val, "UPDATE", org_id)
 
         conn.execute(
             "UPDATE session_rows SET row_content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (json.dumps(content), row["id"])
         )
         conn.execute(
-            "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (session_id,)
+            "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND organisation_id = ?",
+            (session_id, org_id)
         )
         return {"success": True}
 
 
 @app.post("/api/sessions/{session_id}/rows/bulk")
 async def bulk_update_rows(session_id: int, request: Request):
+    org_id = get_org_id(request)
     body = await request.json()
     rows = body.get("rows", [])
 
@@ -317,72 +401,94 @@ async def bulk_update_rows(session_id: int, request: Request):
             content = row.get("content") or row.get("normalized_json")
             conn.execute(
                 "UPDATE session_rows SET row_content = ?, updated_at = CURRENT_TIMESTAMP "
-                "WHERE session_id = ? AND row_index = ?",
-                (json.dumps(content), session_id, target_idx)
+                "WHERE session_id = ? AND row_index = ? AND organisation_id = ?",
+                (json.dumps(content), session_id, target_idx, org_id)
             )
         conn.execute(
-            "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (session_id,)
+            "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND organisation_id = ?",
+            (session_id, org_id)
         )
     return {"success": True}
 
 
 @app.delete("/api/sessions/{session_id}")
-def delete_session(session_id: int):
+def delete_session(session_id: int, request: Request):
+    org_id = get_org_id(request)
     with get_db() as conn:
-        conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        conn.execute(
+            "DELETE FROM sessions WHERE id = ? AND organisation_id = ?",
+            (session_id, org_id)
+        )
     return {"success": True}
 
 
 # --- Master Data ---
 
 @app.get("/api/master/cellars")
-def get_master_cellars():
+def get_master_cellars(request: Request):
+    org_id = get_org_id(request)
     with get_db() as conn:
-        cursor = conn.execute("SELECT name FROM master_cellars ORDER BY name")
+        cursor = conn.execute(
+            "SELECT name FROM master_cellars WHERE organisation_id = ? ORDER BY name",
+            (org_id,)
+        )
         return [row[0] for row in cursor.fetchall()]
 
 
 @app.post("/api/master/cellars")
 async def save_master_cellars(request: Request):
+    org_id = get_org_id(request)
     body = await request.json()
     names = body.get("names", [])
     with get_db() as conn:
-        conn.execute("DELETE FROM master_cellars")
+        conn.execute("DELETE FROM master_cellars WHERE organisation_id = ?", (org_id,))
         for name in names:
-            conn.execute("INSERT INTO master_cellars (name) VALUES (?)", (name,))
+            conn.execute(
+                "INSERT INTO master_cellars (name, organisation_id) VALUES (?, ?)",
+                (name, org_id)
+            )
     return {"success": True}
 
 
 @app.delete("/api/master/cellars")
-def clear_master_cellars():
+def clear_master_cellars(request: Request):
+    org_id = get_org_id(request)
     with get_db() as conn:
-        conn.execute("DELETE FROM master_cellars")
+        conn.execute("DELETE FROM master_cellars WHERE organisation_id = ?", (org_id,))
     return {"success": True}
 
 
 @app.get("/api/master/clients")
-def get_master_clients():
+def get_master_clients(request: Request):
+    org_id = get_org_id(request)
     with get_db() as conn:
-        cursor = conn.execute("SELECT code FROM master_clients ORDER BY code")
+        cursor = conn.execute(
+            "SELECT code FROM master_clients WHERE organisation_id = ? ORDER BY code",
+            (org_id,)
+        )
         return [row[0] for row in cursor.fetchall()]
 
 
 @app.post("/api/master/clients")
 async def save_master_clients(request: Request):
+    org_id = get_org_id(request)
     body = await request.json()
     codes = body.get("codes", [])
     with get_db() as conn:
-        conn.execute("DELETE FROM master_clients")
+        conn.execute("DELETE FROM master_clients WHERE organisation_id = ?", (org_id,))
         for code in codes:
-            conn.execute("INSERT INTO master_clients (code) VALUES (?)", (code,))
+            conn.execute(
+                "INSERT INTO master_clients (code, organisation_id) VALUES (?, ?)",
+                (code, org_id)
+            )
     return {"success": True}
 
 
 @app.delete("/api/master/clients")
-def clear_master_clients():
+def clear_master_clients(request: Request):
+    org_id = get_org_id(request)
     with get_db() as conn:
-        conn.execute("DELETE FROM master_clients")
+        conn.execute("DELETE FROM master_clients WHERE organisation_id = ?", (org_id,))
     return {"success": True}
 
 

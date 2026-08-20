@@ -69,11 +69,14 @@ The backend creates the `WineOnboarding` database and all required tables automa
 The database connection is configured via environment variables in a `.env` file at the project root:
 
 ```
-DB_SERVER=WOLUCA\SQLEXPRESS
-DB_NAME=WineOnboarding
+SQL_SERVER=WOLUCA\SQLEXPRESS
+SQL_DATABASE=WineOnboarding
+DEV_ORG_ID=1
 ```
 
 Windows Authentication is used — no username/password required on a local machine.
+
+`DEV_ORG_ID` controls which organisation the backend acts as during local development. Change it and restart to switch organisations.
 
 ---
 

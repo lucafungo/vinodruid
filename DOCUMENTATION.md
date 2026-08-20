@@ -19,14 +19,16 @@ The application follows a decoupled full-stack architecture with a Python backen
 - **Data Handling:** `papaparse`, `ExcelJS`, and `SheetJS` (`xlsx`) for client-side parsing of `.csv`, `.xls`, and `.xlsx` files.
 
 ### Database Schema
-The `WineOnboarding` database uses six tables:
+The `WineOnboarding` database uses eight tables:
 
-- **`sessions`**: Tracks session metadata — data type, mapping configuration, status, and timestamps.
-- **`session_rows`**: Stores row-level data as JSON, linked to a session via `session_id`. Has a unique constraint on `(session_id, row_index)` and an index on `session_id`.
-- **`audit_trail`**: Records every manual and AI-assisted change with `old_value`, `new_value`, and `change_type`. Indexed on `session_id`.
-- **`master_cellars`**: Cellar name master list, populated when a Cellars file is imported and marked complete. Used to validate cellar names in inventory, reserves, and order imports.
-- **`master_clients`**: Account code master list, populated when a Clients or Suppliers file is imported. Used to validate account codes in reserves and order imports.
-- **`regions`**: Global wine geography reference table — 3,026 entries covering countries, regions, sub-regions, and communes. Seeded automatically on first server start.
+- **`organisations`**: One row per tenant — name, organisation type, default country and currency, disabled flag.
+- **`users`**: One row per user — linked to an organisation via `organisation_id`, stores alias, forename, surname, display name, email, access level (`admin` / `user`), and disabled flag. Passwords stored in plain text for Phase 1; replaced with Entra ID in Phase 2.
+- **`sessions`**: Tracks session metadata — data type, mapping configuration, status, and timestamps. Scoped to `organisation_id`.
+- **`session_rows`**: Stores row-level data as JSON, linked to a session via `session_id`. Has a unique constraint on `(session_id, row_index)` and an index on `session_id`. Scoped to `organisation_id`.
+- **`audit_trail`**: Records every manual and AI-assisted change with `old_value`, `new_value`, and `change_type`. Indexed on `session_id`. Scoped to `organisation_id`.
+- **`master_cellars`**: Cellar name master list, populated when a Cellars file is imported and marked complete. Scoped to `organisation_id`.
+- **`master_clients`**: Account code master list, populated when a Clients or Suppliers file is imported. Scoped to `organisation_id`.
+- **`regions`**: Global wine geography reference table — 3,026 entries covering countries, regions, sub-regions, and communes. Seeded automatically on first server start. Not org-scoped.
 
 ---
 

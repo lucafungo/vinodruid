@@ -53,50 +53,43 @@ App is stable and frozen. Phase 1 begins next.
 
 ## Phase 1 — Multi-tenant Database (3 sessions)
 
-### Session 6 — New tables: organisations & users
-Add two new tables to `init_db()` in server.py:
+### Sessions 6 + 7 — Multi-tenant tables and query scoping ✅
+Combined into one session. Delivered:
 
+**New tables in `init_db()`:**
 ```sql
 organisations (
-  id INT IDENTITY PRIMARY KEY,
+  organisation_id INT IDENTITY PRIMARY KEY,
   name NVARCHAR(255) NOT NULL,
-  slug NVARCHAR(100) NOT NULL UNIQUE,  -- short identifier, e.g. "wineowners"
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  organisation_type_ref NVARCHAR(100),
+  default_country_ref NVARCHAR(100),
+  default_currency_ref NVARCHAR(10),
+  disabled BIT DEFAULT 0,
+  created DATETIME, created_by INT,
+  updated DATETIME, updated_by INT
 )
 
 users (
-  id INT IDENTITY PRIMARY KEY,
-  entra_oid NVARCHAR(255) NOT NULL UNIQUE,  -- Azure Entra object ID
-  email NVARCHAR(255) NOT NULL,
-  display_name NVARCHAR(255),
-  organisation_id INT NOT NULL REFERENCES organisations(id),
-  role NVARCHAR(50) NOT NULL DEFAULT 'editor',  -- 'admin' | 'editor' | 'viewer'
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  user_id INT IDENTITY PRIMARY KEY,
+  organisation_id INT NOT NULL REFERENCES organisations(organisation_id),
+  alias NVARCHAR(100), user_type NVARCHAR(50), password NVARCHAR(255),
+  title NVARCHAR(50), forename NVARCHAR(100), surname NVARCHAR(100),
+  display_name NVARCHAR(200), email NVARCHAR(255), country_ref NVARCHAR(100),
+  user_access NVARCHAR(50),  -- 'admin' | 'user'
+  disabled BIT DEFAULT 0,
+  created DATETIME, created_by INT,
+  updated DATETIME, updated_by INT
 )
 ```
 
-- Insert a test organisation and test user manually (SQL) to verify structure
-- No API endpoints yet — just the tables
-- Keep local dev working: add a `DEV_ORG_ID` env var that bypasses auth for local testing
+**`organisation_id INT NOT NULL DEFAULT 1` added to:** `sessions`, `session_rows`, `audit_trail`, `master_cellars`, `master_clients`. `regions` stays global.
 
-### Session 7 — Add organisation_id to all per-org tables
-Add `organisation_id INT NOT NULL` to:
-- `sessions`
-- `session_rows`
-- `audit_trail`
-- `master_cellars`
-- `master_clients`
-
-`regions` stays global — no `organisation_id`.
-
-Update **every** SQL query in server.py:
-- Every SELECT: add `WHERE organisation_id = ?`
-- Every INSERT: include `organisation_id`
-- Every DELETE: scope to org
-
-Add helper `get_org_id(request)` in server.py — for now returns the hardcoded `DEV_ORG_ID` from env. This will be replaced with real JWT extraction in Phase 2 without touching any endpoint code.
-
-Test: manually insert rows for two different org IDs and verify each org only sees its own data.
+- Default organisation (id=1) auto-seeded on first server start
+- `get_org_id(request)` added to `server.py` — reads `DEV_ORG_ID` from `.env`; Phase 2 swaps this for JWT extraction without touching endpoint code
+- Every SELECT, INSERT, DELETE scoped by `organisation_id`
+- `DEV_ORG_ID=1` added to `.env` and `.env.example`
+- `queries.sql` created with diagnostic, isolation-test, and maintenance queries
+- Existing Phase 0 data auto-assigned to org 1 via `ALTER TABLE ... ADD organisation_id INT NOT NULL DEFAULT 1` (idempotent, runs on startup)
 
 ### Session 8 — Admin API: org & user management
 New endpoints (all require `role = 'admin'` — enforced once auth is live, stubbed for now):
@@ -321,8 +314,8 @@ Each session covers one area of operations: the process is documented and then w
 | 3 | 3 | 0 | ✅ PO review + validation + export |
 | 4 | 4 | 0 | ✅ Full regression test, all bugs fixed |
 | 5 | 5 | 0 | ✅ App stable, polished & frozen |
-| 6 | 6 | 1 | organisations + users tables |
-| 7 | 7 | 1 | org_id on all tables, all queries scoped |
+| 6 | 6+7 | 1 | ✅ organisations + users tables, org_id on all tables, all queries scoped |
+| 7 | — | — | ✅ combined into session 6 |
 | 8 | 8 | 1 | Admin API endpoints |
 | 9 | 9 | 2 | Azure Entra setup + FastAPI JWT |
 | 10 | 10 | 2 | React MSAL login flow |

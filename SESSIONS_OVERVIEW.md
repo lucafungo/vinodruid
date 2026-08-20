@@ -30,11 +30,8 @@ All bugs from testing resolved. Key fixes: no-LWIN required fields corrected to 
 
 ## Phase 1 — Multi-tenant Database (3 sessions)
 
-Session 6: Organisations and users
-Add two new tables to the database, one for organisations and one for users with their roles. The app keeps working locally via a test organisation in the config.
-
-Session 7: Scope all data to organisations
-Add an organisation ID to every relevant table and update every query to filter by it. Test with two fake organisations to confirm neither can see the other's data.
+Sessions 6 and 7: Multi-tenant database (combined)
+Added two new tables to the database: one for organisations and one for users. Added an organisation ID column to every data table (sessions, rows, audit trail, master cellars, master clients) and updated every query in the backend to filter by it. Existing data was automatically assigned to organisation 1. A default organisation is seeded on first startup. Local development works via a DEV_ORG_ID setting in the environment file — change it and restart to switch organisation. To test isolation, insert a second organisation in SQL and switch the env setting; the app shows a completely empty workspace with no data from organisation 1. A SQL utility file was added with diagnostic and maintenance queries.
 
 Session 8: Admin API
 Build the backend endpoints an administrator needs to create organisations and manage users. Test everything. Access control is prepared but not enforced yet — that comes in Phase 2.
