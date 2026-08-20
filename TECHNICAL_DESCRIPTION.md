@@ -287,6 +287,7 @@ All endpoints are served by FastAPI at `http://localhost:3000`. Interactive docs
 | POST | `/api/master/clients` | Replace master client list |
 | DELETE | `/api/master/clients` | Clear master client list |
 | GET | `/api/master/regions` | Get full regions reference table |
+| GET | `/api/org` | Returns the current organisation_id (reads DEV_ORG_ID; Phase 2: JWT) |
 
 ---
 

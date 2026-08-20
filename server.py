@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-load_dotenv()
+load_dotenv(override=True)
 
 app = FastAPI()
 
@@ -500,6 +500,11 @@ def get_regions():
         )
         cols = ["Region", "Type", "Parent", "Appellation", "Classification", "Designation"]
         return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+
+@app.get("/api/org")
+def get_org(request: Request):
+    return {"organisation_id": get_org_id(request)}
 
 
 @app.post("/api/system/ai-fix")

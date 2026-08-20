@@ -815,19 +815,42 @@ export default function App() {
     }
   };
 
-  // Completed Tasks state
-  const [completedTasks, setCompletedTasks] = useState<Record<string, { data: any[], fileName: string, completedAt: string }>>({});
-  const [openCompletedDropdown, setOpenCompletedDropdown] = useState<DataType | null>(null);
-
-  useEffect(() => {
-    const savedCompleted = localStorage.getItem('completed_tasks');
-    if (savedCompleted) {
-      try {
-        setCompletedTasks(JSON.parse(savedCompleted));
-      } catch (e) {
-        console.error("Failed to load completed tasks", e);
+  // Completed Tasks state — org-scoped, loaded synchronously from localStorage cache
+  const [orgId, setOrgId] = useState<number>(() =>
+    parseInt(localStorage.getItem('_vd_org_id') ?? '1', 10)
+  );
+  const completedStorageKey = `completed_tasks_org_${orgId}`;
+  const [completedTasks, setCompletedTasks] = useState<Record<string, { data: any[], fileName: string, completedAt: string }>>(() => {
+    const key = `completed_tasks_org_${parseInt(localStorage.getItem('_vd_org_id') ?? '1', 10)}`;
+    let raw = localStorage.getItem(key);
+    if (!raw) {
+      // One-time migration from old unscoped key
+      const legacy = localStorage.getItem('completed_tasks');
+      if (legacy) {
+        localStorage.setItem(key, legacy);
+        localStorage.removeItem('completed_tasks');
+        raw = legacy;
       }
     }
+    try { return raw ? JSON.parse(raw) : {}; } catch { return {}; }
+  });
+  const [openCompletedDropdown, setOpenCompletedDropdown] = useState<DataType | null>(null);
+
+  // Sync org id from backend — updates state if DEV_ORG_ID changed since last run
+  useEffect(() => {
+    fetch('http://localhost:3000/api/org')
+      .then(r => r.json())
+      .then(data => {
+        const id = data.organisation_id as number;
+        localStorage.setItem('_vd_org_id', String(id));
+        if (id !== orgId) {
+          setOrgId(id);
+          const key = `completed_tasks_org_${id}`;
+          const raw = localStorage.getItem(key);
+          try { setCompletedTasks(raw ? JSON.parse(raw) : {}); } catch { setCompletedTasks({}); }
+        }
+      })
+      .catch(() => {}); // keep using cached org id — backend may still be starting
   }, []);
 
   useEffect(() => {
@@ -861,7 +884,7 @@ export default function App() {
     };
 
     setCompletedTasks(newCompleted);
-    localStorage.setItem('completed_tasks', JSON.stringify(newCompleted));
+    localStorage.setItem(completedStorageKey, JSON.stringify(newCompleted));
     
     // Update session status in DB
     if (currentSessionId) {
@@ -889,7 +912,7 @@ export default function App() {
     const newCompleted = { ...completedTasks };
     delete newCompleted[type];
     setCompletedTasks(newCompleted);
-    localStorage.setItem('completed_tasks', JSON.stringify(newCompleted));
+    localStorage.setItem(completedStorageKey, JSON.stringify(newCompleted));
     setOpenCompletedDropdown(null);
   };
 
@@ -906,7 +929,7 @@ export default function App() {
     const newCompleted = { ...completedTasks };
     delete newCompleted[type];
     setCompletedTasks(newCompleted);
-    localStorage.setItem('completed_tasks', JSON.stringify(newCompleted));
+    localStorage.setItem(completedStorageKey, JSON.stringify(newCompleted));
     setOpenCompletedDropdown(null);
     await handleLoadSession(sessionId);
   };
@@ -2822,7 +2845,7 @@ export default function App() {
         console.log('[StartNew] Clearing completed flag for:', targetDataType);
         delete newCompleted[targetDataType];
         setCompletedTasks(newCompleted);
-        localStorage.setItem('completed_tasks', JSON.stringify(newCompleted));
+        localStorage.setItem(completedStorageKey, JSON.stringify(newCompleted));
       }
     }
 
