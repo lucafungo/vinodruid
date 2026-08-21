@@ -5,6 +5,65 @@
 
 
 -- =============================================================================
+-- USER & ORG MANAGEMENT
+-- Run these to set up organisations and users before starting the app.
+-- After inserting, update DEV_ORG_ID and DEV_USER_ID in .env accordingly.
+-- =============================================================================
+
+-- Add a new organisation
+INSERT INTO organisations (name, organisation_type_ref, disabled)
+VALUES (N'Wine Owners', N'wine_merchant', 0);
+-- Then run this to see the new id:
+SELECT TOP 1 organisation_id, name FROM organisations ORDER BY organisation_id DESC;
+
+-- Add a user to an organisation (replace values as needed)
+INSERT INTO users (organisation_id, alias, forename, surname, display_name, email, user_access, user_type, disabled)
+VALUES (1, N'luca.a', N'Luca', N'Alfieri', N'Luca Alfieri', N'luca.alfieri@wineowners.com', N'admin', N'internal', 0);
+-- Then run this to see the new id:
+SELECT TOP 1 user_id, display_name, organisation_id FROM users ORDER BY user_id DESC;
+
+-- Verify a user can log in (org active + user active + belongs to org)
+SELECT u.user_id, u.display_name, u.user_access, o.name AS org_name
+FROM users u
+JOIN organisations o ON u.organisation_id = o.organisation_id
+WHERE u.user_id = 1 AND u.disabled = 0 AND o.disabled = 0;
+
+-- List all active users per org
+SELECT u.user_id, u.display_name, u.alias, u.email, u.user_access,
+       o.name AS organisation_name
+FROM users u
+JOIN organisations o ON u.organisation_id = o.organisation_id
+WHERE u.disabled = 0 AND o.disabled = 0
+ORDER BY o.organisation_id, u.user_id;
+
+-- Soft-disable a user (they are rejected by /api/me)
+UPDATE users SET disabled = 1 WHERE user_id = 1;
+
+-- Re-enable a user
+UPDATE users SET disabled = 0 WHERE user_id = 1;
+
+-- Soft-disable an organisation (all its users are rejected by /api/me)
+UPDATE organisations SET disabled = 1 WHERE organisation_id = 1;
+
+-- Re-enable an organisation
+UPDATE organisations SET disabled = 0 WHERE organisation_id = 1;
+
+-- Hard-delete a user
+DELETE FROM users WHERE user_id = 1;
+
+-- Hard-delete an organisation and ALL its data (run in this order)
+-- Step 1: clear master data
+DELETE FROM master_cellars WHERE organisation_id = 1;
+DELETE FROM master_clients WHERE organisation_id = 1;
+-- Step 2: delete sessions (cascades to session_rows + audit_trail automatically)
+DELETE FROM sessions WHERE organisation_id = 1;
+-- Step 3: delete users
+DELETE FROM users WHERE organisation_id = 1;
+-- Step 4: delete organisation
+DELETE FROM organisations WHERE organisation_id = 1;
+
+
+-- =============================================================================
 -- SCHEMA INSPECTION
 -- =============================================================================
 

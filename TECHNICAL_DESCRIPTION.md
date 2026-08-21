@@ -287,7 +287,7 @@ All endpoints are served by FastAPI at `http://localhost:3000`. Interactive docs
 | POST | `/api/master/clients` | Replace master client list |
 | DELETE | `/api/master/clients` | Clear master client list |
 | GET | `/api/master/regions` | Get full regions reference table |
-| GET | `/api/org` | Returns the current organisation_id (reads DEV_ORG_ID; Phase 2: JWT) |
+| GET | `/api/me` | Validates org + user exist and match; returns display_name, org name, user_access |
 
 ---
 
@@ -315,7 +315,8 @@ Starts both servers via `concurrently`. Frontend at `:5173`, API at `:3000`.
 SQL_SERVER=WOLUCA\SQLEXPRESS
 SQL_DATABASE=WineOnboarding
 DEV_ORG_ID=1
+DEV_USER_ID=1
 ```
 Windows Authentication — no password required on a local machine.
 
-`DEV_ORG_ID` is the Phase 1 multi-tenancy bypass. Every request is treated as coming from the organisation with this ID. Change it and restart the server to switch organisation (useful for isolation testing). Phase 2 replaces this with real JWT extraction without touching any endpoint code.
+`DEV_ORG_ID` and `DEV_USER_ID` are the Phase 1 multi-tenancy bypass. On every request, the backend reads these values and treats the caller as that org and user. `GET /api/me` validates both exist in the database and that the user belongs to the org — if not, the frontend shows a clear error screen instead of loading the app. Phase 2 replaces both env vars with real JWT extraction without touching any endpoint code.

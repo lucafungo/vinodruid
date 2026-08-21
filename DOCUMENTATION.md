@@ -79,7 +79,7 @@ The Python/FastAPI backend (`server.py`) provides a RESTful interface for sessio
 | `PATCH` | `/api/sessions/:id/rows/:rowIndex` | Update a single row and write audit entry |
 | `POST` | `/api/sessions/:id/rows/bulk` | Bulk update multiple rows |
 | `DELETE` | `/api/sessions/:id` | Delete a session and all its rows |
-| `GET` | `/api/org` | Returns current `organisation_id` — reads `DEV_ORG_ID` in Phase 1, JWT in Phase 2 |
+| `GET` | `/api/me` | Validates org + user; returns display name, org name, access level. Returns 403 with a clear message if org not found, user not found, or user doesn't belong to the org. |
 | `POST` | `/api/system/ai-fix` | AI batch data cleaning (requires `ANTHROPIC_API_KEY`) |
 
 ---

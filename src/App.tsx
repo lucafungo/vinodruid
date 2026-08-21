@@ -836,13 +836,28 @@ export default function App() {
   });
   const [openCompletedDropdown, setOpenCompletedDropdown] = useState<DataType | null>(null);
 
-  // Sync org id from backend — updates state if DEV_ORG_ID changed since last run
+  const [currentUser, setCurrentUser] = useState<{
+    user_id: number;
+    display_name: string;
+    forename: string;
+    organisation_id: number;
+    organisation_name: string;
+    user_access: string;
+  } | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  // Fetch identity from backend — validates org + user and updates org-scoped storage key
   useEffect(() => {
-    fetch('http://localhost:3000/api/org')
-      .then(r => r.json())
-      .then(data => {
+    fetch('http://localhost:3000/api/me')
+      .then(r => r.json().then(d => ({ ok: r.ok, data: d })))
+      .then(({ ok, data }) => {
+        if (!ok) {
+          setAuthError(data.detail ?? 'Unknown authentication error.');
+          return;
+        }
         const id = data.organisation_id as number;
         localStorage.setItem('_vd_org_id', String(id));
+        setCurrentUser(data);
         if (id !== orgId) {
           setOrgId(id);
           const key = `completed_tasks_org_${id}`;
@@ -3007,6 +3022,21 @@ export default function App() {
     loadSessions();
   };
 
+  if (authError) {
+    return (
+      <div className="min-h-screen bg-[#F5F2ED] flex items-center justify-center p-8">
+        <div className="max-w-md w-full bg-white rounded-2xl border border-rose-200 shadow-lg p-8 text-center">
+          <div className="w-12 h-12 rounded-full bg-rose-100 flex items-center justify-center mx-auto mb-4">
+            <span className="text-rose-600 text-xl">!</span>
+          </div>
+          <h2 className="text-lg font-semibold text-[#1A1A1A] mb-2">Cannot start vinoDruid</h2>
+          <p className="text-sm text-rose-700 bg-rose-50 rounded-lg px-4 py-3 mb-4 text-left">{authError}</p>
+          <p className="text-xs text-black/40">Update your <code className="font-mono bg-black/5 px-1 rounded">.env</code> file and restart the server.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#F5F2ED] text-[#1A1A1A] font-sans p-8">
       <header className="max-w-[98vw] mx-auto mb-12 flex justify-between items-end">
@@ -3036,7 +3066,13 @@ export default function App() {
         </div>
         
         <div className="flex items-center gap-4">
-<button 
+          {currentUser && (
+            <div className="text-right">
+              <p className="text-sm font-medium text-[#1A1A1A]">Hi {currentUser.forename || currentUser.display_name}</p>
+              <p className="text-xs text-black/40 uppercase tracking-wider">{currentUser.organisation_name}</p>
+            </div>
+          )}
+          <button
             onClick={() => setIsRulesModalOpen(true)}
             className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg border border-gray-200 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors"
           >

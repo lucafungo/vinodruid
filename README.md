@@ -72,11 +72,12 @@ The database connection is configured via environment variables in a `.env` file
 SQL_SERVER=WOLUCA\SQLEXPRESS
 SQL_DATABASE=WineOnboarding
 DEV_ORG_ID=1
+DEV_USER_ID=1
 ```
 
 Windows Authentication is used — no username/password required on a local machine.
 
-`DEV_ORG_ID` controls which organisation the backend acts as during local development. Change it and restart to switch organisations.
+`DEV_ORG_ID` and `DEV_USER_ID` control which organisation and user the backend acts as during local development. Both must exist in the database — if either is missing or the user doesn't belong to the org, the app shows an error screen on startup instead of loading. Change them and restart to switch identities.
 
 ---
 

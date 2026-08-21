@@ -29,6 +29,11 @@ def get_org_id(request: Request) -> int:
     return int(os.getenv("DEV_ORG_ID", "1"))
 
 
+def get_user_id(request: Request) -> int:
+    # Phase 1: reads DEV_USER_ID from env. Phase 2: replaced with JWT extraction.
+    return int(os.getenv("DEV_USER_ID", "1"))
+
+
 def make_conn_str(database: str) -> str:
     return f"DRIVER={{{DRIVER}}};SERVER={SERVER};DATABASE={database};Trusted_Connection=yes;"
 
@@ -89,13 +94,13 @@ def stringify(val: Any) -> str:
 
 
 def add_audit_log(conn, session_id: int, row_id: Optional[int], field_name: Optional[str],
-                  old_val: Any, new_val: Any, change_type: str, org_id: int = 1):
+                  old_val: Any, new_val: Any, change_type: str, org_id: int = 1, user_id: int = 1):
     try:
         conn.execute(
             "INSERT INTO audit_trail "
-            "(session_id, row_id, field_name, old_value, new_value, change_type, organisation_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (session_id, row_id, field_name, stringify(old_val), stringify(new_val), change_type, org_id)
+            "(session_id, row_id, field_name, old_value, new_value, change_type, organisation_id, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (session_id, row_id, field_name, stringify(old_val), stringify(new_val), change_type, org_id, user_id)
         )
     except Exception as e:
         print(f"Audit log failed: {e}")
@@ -144,7 +149,7 @@ def init_db():
             )
         """)
 
-        # Seed default organisation — only runs on a fresh DB
+        # Seed default organisation (id=1) on a fresh DB
         conn.execute("""
             IF NOT EXISTS (SELECT 1 FROM organisations)
             INSERT INTO organisations (name, organisation_type_ref, disabled)
@@ -162,7 +167,9 @@ def init_db():
                 status NVARCHAR(MAX) DEFAULT 'in_progress',
                 disabled INT DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                created_by INT,
+                updated_by INT
             )
         """)
         conn.execute("""
@@ -191,6 +198,7 @@ def init_db():
                 new_value NVARCHAR(MAX),
                 change_type NVARCHAR(MAX) NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                created_by INT,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             )
         """)
@@ -200,7 +208,8 @@ def init_db():
                 id INT IDENTITY(1,1) PRIMARY KEY,
                 organisation_id INT NOT NULL DEFAULT 1,
                 name NVARCHAR(MAX) NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                created_by INT
             )
         """)
         conn.execute("""
@@ -209,16 +218,29 @@ def init_db():
                 id INT IDENTITY(1,1) PRIMARY KEY,
                 organisation_id INT NOT NULL DEFAULT 1,
                 code NVARCHAR(MAX) NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                created_by INT
             )
         """)
 
-        # Add organisation_id to pre-existing tables (idempotent — no-op if column already exists)
+        # Add organisation_id to pre-existing tables (idempotent)
         for table in ("sessions", "session_rows", "audit_trail", "master_cellars", "master_clients"):
             conn.execute(
                 f"IF NOT EXISTS (SELECT 1 FROM sys.columns "
                 f"WHERE object_id = OBJECT_ID('{table}') AND name = 'organisation_id') "
                 f"ALTER TABLE {table} ADD organisation_id INT NOT NULL DEFAULT 1"
+            )
+
+        # Add created_by / updated_by to pre-existing tables (idempotent)
+        for table, col in [
+            ("sessions", "created_by"), ("sessions", "updated_by"),
+            ("audit_trail", "created_by"),
+            ("master_cellars", "created_by"), ("master_clients", "created_by"),
+        ]:
+            conn.execute(
+                f"IF NOT EXISTS (SELECT 1 FROM sys.columns "
+                f"WHERE object_id = OBJECT_ID('{table}') AND name = '{col}') "
+                f"ALTER TABLE {table} ADD {col} INT"
             )
 
         # --- Indexes / constraints ---
@@ -252,6 +274,55 @@ def init_db():
 init_db()
 
 
+# --- Identity ---
+
+@app.get("/api/me")
+def get_me(request: Request):
+    org_id = get_org_id(request)
+    user_id = get_user_id(request)
+
+    with get_db() as conn:
+        cursor = conn.execute(
+            "SELECT organisation_id, name FROM organisations WHERE organisation_id = ? AND disabled = 0",
+            (org_id,)
+        )
+        org = row_as_dict(cursor)
+        if not org:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Organisation {org_id} not found. Check DEV_ORG_ID in your .env file."
+            )
+
+        cursor = conn.execute(
+            "SELECT user_id, display_name, forename, surname, email, user_access, organisation_id "
+            "FROM users WHERE user_id = ? AND disabled = 0",
+            (user_id,)
+        )
+        user = row_as_dict(cursor)
+        if not user:
+            raise HTTPException(
+                status_code=403,
+                detail=f"User {user_id} not found. Check DEV_USER_ID in your .env file."
+            )
+
+        if user["organisation_id"] != org_id:
+            raise HTTPException(
+                status_code=403,
+                detail=f"User {user_id} does not belong to organisation {org_id}."
+            )
+
+        return {
+            "user_id": user["user_id"],
+            "display_name": user["display_name"],
+            "forename": user["forename"],
+            "surname": user["surname"],
+            "email": user["email"],
+            "user_access": user["user_access"],
+            "organisation_id": org["organisation_id"],
+            "organisation_name": org["name"],
+        }
+
+
 # --- Sessions ---
 
 @app.get("/api/sessions")
@@ -268,6 +339,7 @@ def list_sessions(request: Request):
 @app.post("/api/sessions")
 async def create_session(request: Request):
     org_id = get_org_id(request)
+    user_id = get_user_id(request)
     body = await request.json()
     session_type = body.get("sessionType")
     rows = body.get("rows", [])
@@ -276,9 +348,9 @@ async def create_session(request: Request):
 
     with get_db() as conn:
         cursor = conn.execute(
-            "INSERT INTO sessions (session_type, fields, status, organisation_id) "
-            "OUTPUT INSERTED.id VALUES (?, ?, ?, ?)",
-            (session_type, json.dumps(fields), status, org_id)
+            "INSERT INTO sessions (session_type, fields, status, organisation_id, created_by, updated_by) "
+            "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?, ?)",
+            (session_type, json.dumps(fields), status, org_id, user_id, user_id)
         )
         session_id = cursor.fetchone()[0]
 
@@ -289,7 +361,7 @@ async def create_session(request: Request):
                 (session_id, i + 1, json.dumps(row_data), org_id)
             )
             row_id = row_cursor.fetchone()[0]
-            add_audit_log(conn, session_id, row_id, None, None, row_data, "CREATE", org_id)
+            add_audit_log(conn, session_id, row_id, None, None, row_data, "CREATE", org_id, user_id)
 
         return {"id": session_id}
 
@@ -297,6 +369,7 @@ async def create_session(request: Request):
 @app.patch("/api/sessions/{session_id}")
 async def update_session(session_id: int, request: Request):
     org_id = get_org_id(request)
+    user_id = get_user_id(request)
     body = await request.json()
     status = body.get("status")
     fields = body.get("fields")
@@ -317,6 +390,8 @@ async def update_session(session_id: int, request: Request):
 
     if updates:
         updates.append("updated_at = CURRENT_TIMESTAMP")
+        updates.append("updated_by = ?")
+        params.append(user_id)
         query = f"UPDATE sessions SET {', '.join(updates)} WHERE id = ? AND organisation_id = ?"
         params.extend([session_id, org_id])
         with get_db() as conn:
@@ -358,6 +433,7 @@ def get_session(session_id: int, request: Request):
 @app.patch("/api/sessions/{session_id}/rows/{row_index}")
 async def update_row(session_id: int, row_index: int, request: Request):
     org_id = get_org_id(request)
+    user_id = get_user_id(request)
     body = await request.json()
     content = body.get("content")
 
@@ -376,15 +452,15 @@ async def update_row(session_id: int, row_index: int, request: Request):
 
         for key, val in content.items():
             if key not in excluded and val != old_content.get(key):
-                add_audit_log(conn, session_id, row["id"], key, old_content.get(key), val, "UPDATE", org_id)
+                add_audit_log(conn, session_id, row["id"], key, old_content.get(key), val, "UPDATE", org_id, user_id)
 
         conn.execute(
             "UPDATE session_rows SET row_content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (json.dumps(content), row["id"])
         )
         conn.execute(
-            "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND organisation_id = ?",
-            (session_id, org_id)
+            "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND organisation_id = ?",
+            (user_id, session_id, org_id)
         )
         return {"success": True}
 
@@ -392,6 +468,7 @@ async def update_row(session_id: int, row_index: int, request: Request):
 @app.post("/api/sessions/{session_id}/rows/bulk")
 async def bulk_update_rows(session_id: int, request: Request):
     org_id = get_org_id(request)
+    user_id = get_user_id(request)
     body = await request.json()
     rows = body.get("rows", [])
 
@@ -405,8 +482,8 @@ async def bulk_update_rows(session_id: int, request: Request):
                 (json.dumps(content), session_id, target_idx, org_id)
             )
         conn.execute(
-            "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND organisation_id = ?",
-            (session_id, org_id)
+            "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND organisation_id = ?",
+            (user_id, session_id, org_id)
         )
     return {"success": True}
 
@@ -438,14 +515,15 @@ def get_master_cellars(request: Request):
 @app.post("/api/master/cellars")
 async def save_master_cellars(request: Request):
     org_id = get_org_id(request)
+    user_id = get_user_id(request)
     body = await request.json()
     names = body.get("names", [])
     with get_db() as conn:
         conn.execute("DELETE FROM master_cellars WHERE organisation_id = ?", (org_id,))
         for name in names:
             conn.execute(
-                "INSERT INTO master_cellars (name, organisation_id) VALUES (?, ?)",
-                (name, org_id)
+                "INSERT INTO master_cellars (name, organisation_id, created_by) VALUES (?, ?, ?)",
+                (name, org_id, user_id)
             )
     return {"success": True}
 
@@ -472,14 +550,15 @@ def get_master_clients(request: Request):
 @app.post("/api/master/clients")
 async def save_master_clients(request: Request):
     org_id = get_org_id(request)
+    user_id = get_user_id(request)
     body = await request.json()
     codes = body.get("codes", [])
     with get_db() as conn:
         conn.execute("DELETE FROM master_clients WHERE organisation_id = ?", (org_id,))
         for code in codes:
             conn.execute(
-                "INSERT INTO master_clients (code, organisation_id) VALUES (?, ?)",
-                (code, org_id)
+                "INSERT INTO master_clients (code, organisation_id, created_by) VALUES (?, ?, ?)",
+                (code, org_id, user_id)
             )
     return {"success": True}
 
@@ -500,11 +579,6 @@ def get_regions():
         )
         cols = ["Region", "Type", "Parent", "Appellation", "Classification", "Designation"]
         return [dict(zip(cols, row)) for row in cursor.fetchall()]
-
-
-@app.get("/api/org")
-def get_org(request: Request):
-    return {"organisation_id": get_org_id(request)}
 
 
 @app.post("/api/system/ai-fix")

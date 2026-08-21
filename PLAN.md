@@ -84,11 +84,16 @@ users (
 
 **`organisation_id INT NOT NULL DEFAULT 1` added to:** `sessions`, `session_rows`, `audit_trail`, `master_cellars`, `master_clients`. `regions` stays global.
 
+**`created_by INT` and `updated_by INT` added to:** `sessions` (both), `audit_trail` (created_by), `master_cellars` (created_by), `master_clients` (created_by). Populated from `DEV_USER_ID` on every INSERT and UPDATE.
+
 - Default organisation (id=1) auto-seeded on first server start
-- `get_org_id(request)` added to `server.py` — reads `DEV_ORG_ID` from `.env`; Phase 2 swaps this for JWT extraction without touching endpoint code
-- Every SELECT, INSERT, DELETE scoped by `organisation_id`
-- `DEV_ORG_ID=1` added to `.env` and `.env.example`
-- `queries.sql` created with diagnostic, isolation-test, and maintenance queries
+- `get_org_id(request)` reads `DEV_ORG_ID`; `get_user_id(request)` reads `DEV_USER_ID` — Phase 2 swaps both for JWT extraction without touching endpoint code
+- Every SELECT, INSERT, DELETE scoped by `organisation_id`; every INSERT/UPDATE stamps `created_by`/`updated_by`
+- `GET /api/me` validates that the org exists, the user exists, and the user belongs to the org — returns 403 with a clear message on any failure
+- If `/api/me` returns 403, the frontend shows a full-screen error instead of loading the app
+- Header shows "Hi {forename} / {organisation name}" once identity is confirmed
+- `DEV_ORG_ID=1` and `DEV_USER_ID=1` added to `.env` and `.env.example`
+- `queries.sql` created with org/user management, diagnostic, isolation-test, and maintenance queries
 - Existing Phase 0 data auto-assigned to org 1 via `ALTER TABLE ... ADD organisation_id INT NOT NULL DEFAULT 1` (idempotent, runs on startup)
 
 ### Session 8 — Admin API: org & user management
