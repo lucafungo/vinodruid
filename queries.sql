@@ -266,3 +266,14 @@ DELETE FROM sessions       WHERE organisation_id = 1;  -- cascades to session_ro
 -- DROP TABLE IF EXISTS users;
 -- DROP TABLE IF EXISTS organisations;
 -- DROP TABLE IF EXISTS regions;
+
+
+
+INSERT INTO users (organisation_id, alias, forename, surname, display_name, email, user_access, user_type, disabled)
+VALUES (1, N'luca.a', N'Luca', N'Alfieri', N'Luca Alfieri', N'luca.alfieri@wineowners.com', N'admin', N'internal', 0);
+
+
+INSERT INTO users (organisation_id, alias, forename, surname, display_name, email, user_access, user_type, disabled)
+VALUES (2, N'harriet.a', N'Harriet', N'Barr', N'Harriet Barr', N'harriet.barr@winblowners.com', N'admin', N'internal', 0);
+
+

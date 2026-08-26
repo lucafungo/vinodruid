@@ -12,6 +12,7 @@ import { CellarAutocomplete } from './components/CellarAutocomplete';
 import { DuplicateComparisonModal } from './components/DuplicateComparisonModal';
 import { AddLocationModal } from './components/AddLocationModal';
 import { AiFixReviewModal } from './components/AiFixReviewModal';
+import { AdminPanel } from './components/AdminPanel';
 
 // --- Types ---
 
@@ -835,6 +836,8 @@ export default function App() {
     try { return raw ? JSON.parse(raw) : {}; } catch { return {}; }
   });
   const [openCompletedDropdown, setOpenCompletedDropdown] = useState<DataType | null>(null);
+
+  const [showAdmin, setShowAdmin] = useState(false);
 
   const [currentUser, setCurrentUser] = useState<{
     user_id: number;
@@ -3022,6 +3025,16 @@ export default function App() {
     loadSessions();
   };
 
+  if (showAdmin && currentUser) {
+    return (
+      <AdminPanel
+        onBack={() => setShowAdmin(false)}
+        currentUserForename={currentUser.forename || currentUser.display_name}
+        currentOrgName={currentUser.organisation_name}
+      />
+    );
+  }
+
   if (authError) {
     return (
       <div className="min-h-screen bg-[#F5F2ED] flex items-center justify-center p-8">
@@ -3071,6 +3084,14 @@ export default function App() {
               <p className="text-sm font-medium text-[#1A1A1A]">Hi {currentUser.forename || currentUser.display_name}</p>
               <p className="text-xs text-black/40 uppercase tracking-wider">{currentUser.organisation_name}</p>
             </div>
+          )}
+          {currentUser?.user_access === 'admin' && (
+            <button
+              onClick={() => setShowAdmin(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg border border-gray-200 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors"
+            >
+              Admin
+            </button>
           )}
           <button
             onClick={() => setIsRulesModalOpen(true)}
