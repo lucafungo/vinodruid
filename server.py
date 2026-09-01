@@ -1,5 +1,6 @@
 import os
 import json
+import urllib.request as _urllib
 from contextlib import contextmanager
 from typing import Any, Optional
 
@@ -7,6 +8,8 @@ import pyodbc
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from jose import jwt as _jwt
+from jose.exceptions import JWTError
 
 load_dotenv(override=True)
 
@@ -24,14 +27,76 @@ DATABASE = os.getenv("SQL_DATABASE", "WineOnboarding")
 DRIVER = os.getenv("SQL_DRIVER", "ODBC Driver 17 for SQL Server")
 
 
+_AUTH0_DOMAIN = os.getenv("AUTH0_DOMAIN", "")
+_AUTH0_AUDIENCE = os.getenv("AUTH0_AUDIENCE", "")
+_SKIP_AUTH = os.getenv("SKIP_AUTH", "false").lower() == "true"
+_jwks_cache: dict = {}
+
+
+def _get_jwks() -> dict:
+    global _jwks_cache
+    if not _jwks_cache and _AUTH0_DOMAIN:
+        with _urllib.urlopen(f"https://{_AUTH0_DOMAIN}/.well-known/jwks.json", timeout=5) as resp:
+            _jwks_cache = json.loads(resp.read())
+    return _jwks_cache
+
+
+def _verify_token(token: str) -> dict:
+    jwks = _get_jwks()
+    try:
+        header = _jwt.get_unverified_header(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+    key = next((k for k in jwks.get("keys", []) if k.get("kid") == header.get("kid")), None)
+    if not key:
+        raise HTTPException(status_code=401, detail="Signing key not found.")
+    rsa_key = {k: key[k] for k in ("kty", "kid", "use", "n", "e") if k in key}
+    try:
+        return _jwt.decode(token, rsa_key, algorithms=["RS256"],
+                           audience=_AUTH0_AUDIENCE, issuer=f"https://{_AUTH0_DOMAIN}/")
+    except JWTError as exc:
+        raise HTTPException(status_code=401, detail=f"Token invalid: {exc}")
+
+
+def _resolve_user(request: Request) -> tuple:
+    """Returns (org_id, user_id). Caches result on request.state to avoid repeat DB lookups."""
+    if hasattr(request.state, "_vd_user"):
+        return request.state._vd_user
+
+    if _SKIP_AUTH:
+        result = (int(os.getenv("DEV_ORG_ID", "1")), int(os.getenv("DEV_USER_ID", "1")))
+        request.state._vd_user = result
+        return result
+
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header.")
+
+    claims = _verify_token(auth[7:])
+    email = claims.get("email")
+    if not email:
+        raise HTTPException(status_code=401, detail="Token does not contain email claim.")
+
+    with get_db() as conn:
+        cursor = conn.execute(
+            "SELECT user_id, organisation_id FROM users WHERE email = ? AND disabled = 0", (email,)
+        )
+        user = row_as_dict(cursor)
+
+    if not user:
+        raise HTTPException(status_code=403, detail=f"No active user found for {email}.")
+
+    result = (user["organisation_id"], user["user_id"])
+    request.state._vd_user = result
+    return result
+
+
 def get_org_id(request: Request) -> int:
-    # Phase 1: reads DEV_ORG_ID from env. Phase 2: replaced with JWT extraction.
-    return int(os.getenv("DEV_ORG_ID", "1"))
+    return _resolve_user(request)[0]
 
 
 def get_user_id(request: Request) -> int:
-    # Phase 1: reads DEV_USER_ID from env. Phase 2: replaced with JWT extraction.
-    return int(os.getenv("DEV_USER_ID", "1"))
+    return _resolve_user(request)[1]
 
 
 def make_conn_str(database: str) -> str:
@@ -458,6 +523,143 @@ def admin_list_audit():
             "a.change_type, a.created_at, "
             "o.name AS organisation_name, "
             "u.display_name AS created_by_name "
+            "FROM audit_trail a "
+            "LEFT JOIN organisations o ON a.organisation_id = o.organisation_id "
+            "LEFT JOIN users u ON a.created_by = u.user_id "
+            "ORDER BY a.created_at DESC"
+        )
+        return rows_as_dicts(cursor)
+
+
+# --- Admin ---
+
+@app.get("/api/admin/organisations")
+def admin_list_orgs():
+    with get_db() as conn:
+        cursor = conn.execute("SELECT * FROM organisations ORDER BY organisation_id")
+        return rows_as_dicts(cursor)
+
+
+@app.post("/api/admin/organisations")
+async def admin_create_org(request: Request):
+    body = await request.json()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO organisations (name, organisation_type_ref, default_country_ref, default_currency_ref) "
+            "VALUES (?, ?, ?, ?)",
+            (body.get("name"), body.get("organisation_type_ref") or None,
+             body.get("default_country_ref") or None, body.get("default_currency_ref") or None)
+        )
+    return {"success": True}
+
+
+@app.put("/api/admin/organisations/{org_id}")
+async def admin_update_org(org_id: int, request: Request):
+    body = await request.json()
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE organisations SET name=?, organisation_type_ref=?, default_country_ref=?, "
+            "default_currency_ref=?, updated=CURRENT_TIMESTAMP WHERE organisation_id=?",
+            (body.get("name"), body.get("organisation_type_ref") or None,
+             body.get("default_country_ref") or None, body.get("default_currency_ref") or None, org_id)
+        )
+    return {"success": True}
+
+
+@app.post("/api/admin/organisations/{org_id}/disable")
+def admin_disable_org(org_id: int):
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE organisations SET disabled=1, updated=CURRENT_TIMESTAMP WHERE organisation_id=?", (org_id,)
+        )
+    return {"success": True}
+
+
+@app.post("/api/admin/organisations/{org_id}/enable")
+def admin_enable_org(org_id: int):
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE organisations SET disabled=0, updated=CURRENT_TIMESTAMP WHERE organisation_id=?", (org_id,)
+        )
+    return {"success": True}
+
+
+@app.get("/api/admin/users")
+def admin_list_users():
+    with get_db() as conn:
+        cursor = conn.execute(
+            "SELECT u.*, o.name AS organisation_name "
+            "FROM users u LEFT JOIN organisations o ON u.organisation_id = o.organisation_id "
+            "ORDER BY u.user_id"
+        )
+        return rows_as_dicts(cursor)
+
+
+@app.post("/api/admin/users")
+async def admin_create_user(request: Request):
+    body = await request.json()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO users (organisation_id, forename, surname, display_name, email, user_access, user_type) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (body.get("organisation_id"), body.get("forename") or None, body.get("surname") or None,
+             body.get("display_name") or None, body.get("email") or None,
+             body.get("user_access", "user"), body.get("user_type") or None)
+        )
+    return {"success": True}
+
+
+@app.put("/api/admin/users/{user_id}")
+async def admin_update_user(user_id: int, request: Request):
+    body = await request.json()
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE users SET organisation_id=?, forename=?, surname=?, display_name=?, email=?, "
+            "user_access=?, updated=CURRENT_TIMESTAMP WHERE user_id=?",
+            (body.get("organisation_id"), body.get("forename") or None, body.get("surname") or None,
+             body.get("display_name") or None, body.get("email") or None,
+             body.get("user_access"), user_id)
+        )
+    return {"success": True}
+
+
+@app.post("/api/admin/users/{user_id}/disable")
+def admin_disable_user(user_id: int):
+    with get_db() as conn:
+        conn.execute("UPDATE users SET disabled=1, updated=CURRENT_TIMESTAMP WHERE user_id=?", (user_id,))
+    return {"success": True}
+
+
+@app.post("/api/admin/users/{user_id}/enable")
+def admin_enable_user(user_id: int):
+    with get_db() as conn:
+        conn.execute("UPDATE users SET disabled=0, updated=CURRENT_TIMESTAMP WHERE user_id=?", (user_id,))
+    return {"success": True}
+
+
+@app.get("/api/admin/sessions")
+def admin_list_sessions():
+    with get_db() as conn:
+        cursor = conn.execute(
+            "SELECT s.id, s.organisation_id, o.name AS organisation_name, s.session_type, s.status, "
+            "s.created_at, s.updated_at, "
+            "(SELECT COUNT(*) FROM session_rows sr WHERE sr.session_id = s.id) AS total_rows, "
+            "u.display_name AS created_by_name "
+            "FROM sessions s "
+            "LEFT JOIN organisations o ON s.organisation_id = o.organisation_id "
+            "LEFT JOIN users u ON s.created_by = u.user_id "
+            "WHERE s.disabled = 0 ORDER BY s.created_at DESC"
+        )
+        return rows_as_dicts(cursor)
+
+
+@app.get("/api/admin/audit")
+def admin_list_audit():
+    with get_db() as conn:
+        cursor = conn.execute(
+            "SELECT TOP 500 a.id, a.session_id, a.field_name, a.old_value, a.new_value, "
+            "a.change_type, a.created_at, "
+            "o.name AS organisation_name, u.display_name AS created_by_name "
             "FROM audit_trail a "
             "LEFT JOIN organisations o ON a.organisation_id = o.organisation_id "
             "LEFT JOIN users u ON a.created_by = u.user_id "

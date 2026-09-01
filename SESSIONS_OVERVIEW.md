@@ -33,20 +33,20 @@ All bugs from testing resolved. Key fixes: no-LWIN required fields corrected to 
 Sessions 6 and 7: Multi-tenant database (combined)
 Added two new tables to the database: one for organisations and one for users. Added an organisation ID column to every data table (sessions, rows, audit trail, master cellars, master clients) and updated every query in the backend to filter by it. Added created by and updated by columns to track which user performed each action. Existing data was automatically assigned to organisation 1. A default organisation is seeded on first startup. Local development works via DEV_ORG_ID and DEV_USER_ID settings in the environment file. On startup the backend validates that both the organisation and the user exist and that the user belongs to that organisation. If either check fails the app shows a clear error screen instead of loading. When everything is valid the header shows a greeting with the user's name and organisation. A SQL utility file was added with queries to create and manage organisations and users, run diagnostic checks, and test data isolation.
 
-Session 8: Admin API
-Build the backend endpoints an administrator needs to create organisations and manage users. Test everything. Access control is prepared but not enforced yet — that comes in Phase 2.
+Session 8: Admin API and admin panel
+Build the backend endpoints an administrator needs to create organisations and manage users: create and list organisations, create and list users, enable or disable either, view all sessions across all organisations, view the audit trail. Build the admin panel UI so an administrator can do all of this from the browser. Access control is prepared but not enforced until Auth0 is live. Done.
 
 
 ## Phase 2 — Authentication (3 sessions)
 
-Session 9: Azure Entra ID and backend
-Register the app in Azure Entra ID, which is Microsoft's identity platform. Add token validation to the backend so every request is tied to a known user and organisation. A dev bypass stays available for local work.
+Session 9: Auth0 and login flow
+Set up Auth0 as the identity provider. Add JWT token validation to the backend so every request is tied to a known user and organisation by matching the email in the token against the users table. Wrap the React app in the Auth0 provider, add a login redirect for unauthenticated users, and attach the access token to every API call automatically. A dev bypass stays available via an environment variable for local work without logging in. Done.
 
-Session 10: Login screen
-Add a "Sign in with Microsoft" page to the frontend. Once logged in, the user's token is automatically attached to every API call. Name and organisation show in the top bar.
+Session 10: Roles enforcement
+Enforce the three access levels on both backend and frontend: viewer (read and export only), editor (full import access), admin (full access including the admin panel). Backend checks the user's access level on each endpoint group. Frontend hides controls the user cannot use.
 
-Session 11: Roles and admin panel
-Enforce the three roles: viewer (read and export only), editor (full import access), admin (plus the admin panel). Add a basic admin page showing who is in the organisation.
+Session 11: Testing and hardening
+End-to-end test of the full auth flow: register a new user in Auth0, log in, confirm the right organisation is loaded, test role restrictions, confirm a token from organisation A cannot access organisation B's data. Fix anything that needs attention.
 
 
 ## Phase 3 — Azure Deployment (4 sessions)
@@ -67,7 +67,7 @@ Move all connection strings and secrets into Azure Key Vault. Restrict the API t
 ## Phase 4 — Testing in Azure (3 sessions)
 
 Session 16: Full end-to-end test
-Log in through Entra ID and run through every import type on the live environment. Load master data, run imports, fix errors, export. Check session resume works across different devices.
+Log in through Auth0 and run through every import type on the live environment. Load master data, run imports, fix errors, export. Check session resume works across different devices.
 
 Session 17: Tenant isolation test
 Set up two real organisations. Log in as each and confirm the data is completely separate. Try to access one organisation's data using the other's login and confirm it is blocked.
@@ -93,7 +93,7 @@ Session 21: Adding a new organisation
 Document the full process for onboarding a new client. This means creating the organisation record, setting up their space in the system, and confirming their data is isolated from others. Walk through it with a real example.
 
 Session 22: Creating and managing users
-Document how to create a user in Azure Entra ID, assign them to an organisation, and set their role. Cover what to do if a user leaves and how to change a role. Walk through each scenario and confirm it works.
+Document how to create a user in Auth0, assign them to an organisation in the admin panel, and set their access level. Cover what to do if a user leaves and how to change a role. Walk through each scenario and confirm it works.
 
 Session 23: Deploying updates
 Document the deployment process from a code change on the developer's machine to the live application. Cover what to check before deploying, how to verify it went well, and what to do if something goes wrong. Run through a real deployment to validate the steps.

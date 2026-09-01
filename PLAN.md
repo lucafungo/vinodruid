@@ -1,10 +1,10 @@
 # vinoDruid — Project Plan
 
 **Cadence:** 1 session/week × 4 hours  
-**Stack:** React + Vite · Python FastAPI · SQL Server → Azure SQL · Azure Entra ID  
+**Stack:** React + Vite · Python FastAPI · SQL Server → Azure SQL · Auth0  
 **Multi-tenancy model:** Shared DB with `organisation_id` on every per-org table  
 **Regions:** Global (no org scoping)  
-**Auth:** Azure Entra ID, admin-provisioned users  
+**Auth:** Auth0, admin-provisioned users  
 **Billing:** Deferred — not in scope  
 
 ---
@@ -96,76 +96,64 @@ users (
 - `queries.sql` created with org/user management, diagnostic, isolation-test, and maintenance queries
 - Existing Phase 0 data auto-assigned to org 1 via `ALTER TABLE ... ADD organisation_id INT NOT NULL DEFAULT 1` (idempotent, runs on startup)
 
-### Session 8 — Admin API: org & user management
-New endpoints (all require `role = 'admin'` — enforced once auth is live, stubbed for now):
+### Session 8 — Admin API and admin panel ✅
+New endpoints (all require `user_access = 'admin'` — enforced once auth is live):
 
 ```
-POST   /api/admin/organisations          create org
-GET    /api/admin/organisations          list all orgs
-POST   /api/admin/users                  create user, assign to org
-GET    /api/admin/users                  list all users (with org name)
-PATCH  /api/admin/users/{id}             update role or org
-DELETE /api/admin/users/{id}             deactivate user
-GET    /api/me                           returns current user's name, email, org, role
+POST   /api/admin/organisations                  create org
+GET    /api/admin/organisations                  list all orgs
+PUT    /api/admin/organisations/{id}             update org
+POST   /api/admin/organisations/{id}/disable     disable org
+POST   /api/admin/organisations/{id}/enable      enable org
+POST   /api/admin/users                          create user, assign to org
+GET    /api/admin/users                          list all users (with org name)
+PUT    /api/admin/users/{id}                     update user
+POST   /api/admin/users/{id}/disable             disable user
+POST   /api/admin/users/{id}/enable              enable user
+GET    /api/admin/sessions                       list all sessions across all orgs
+GET    /api/admin/audit                          last 500 audit trail entries across all orgs
+GET    /api/me                                   returns current user's name, email, org, access level
 ```
 
-- Test all endpoints via Swagger UI (`http://localhost:3000/docs`)
-- Confirm `GET /api/me` returns the right org for the hardcoded DEV user
-- Confirm non-admin endpoints correctly block when role check is added later
+Admin panel UI (`src/components/AdminPanel.tsx`) — tabs for Organisations, Users, Sessions, Audit Trail.
 
 ---
 
-## Phase 2 — Azure Entra ID Authentication (3 sessions)
+## Phase 2 — Auth0 Authentication (3 sessions)
 
-### Session 9 — Azure setup + FastAPI JWT middleware
-**Azure side (~1.5 hours):**
-- Create Azure subscription (if not already done)
-- Create Entra ID tenant or use existing Microsoft 365 tenant
-- App Registration:
-  - Name: `vinoDruid`
-  - Supported account types: accounts in this org directory only
-  - Redirect URI: `http://localhost:5173` (dev) + future Azure Static Web Apps URL
-  - Add App Roles: `Admin`, `Editor`, `Viewer`
-  - Note: Tenant ID, Client ID, set a Client Secret
+### Session 9 — Auth0 setup + JWT validation + React login ✅
+**Auth0 side (done manually):**
+- Created SPA application on Auth0 dashboard (domain: `winedruid.uk.auth0.com`)
+- Created API with identifier `https://vinodruid/api`
+- Configured allowed callback/logout URLs for `http://localhost:5173`
 
-**FastAPI side (~2 hours):**
-- Add `python-jose[cryptography]` and `httpx` to requirements
-- JWT middleware:
-  - Fetch Entra's JWKS endpoint to validate token signatures
-  - Extract `oid` (user's Entra object ID) from token
-  - Look up `oid` in `users` table → get `organisation_id` + `role`
-  - If user not found: return 403 with clear message
-  - If token invalid/expired: return 401
-- Replace `DEV_ORG_ID` stub in `get_org_id()` with real JWT extraction
-- Keep the stub as a fallback when `DISABLE_AUTH=true` in env (for local dev speed)
+**FastAPI side:**
+- Added `python-jose[cryptography]` to requirements
+- `_get_jwks()` fetches and caches Auth0's public JWKS on first request
+- `_verify_token(token)` validates RS256 signature, audience, issuer
+- `_resolve_user(request)` extracts `email` from token claims, looks up `users` table, caches result on `request.state`
+- `get_org_id()` and `get_user_id()` are thin wrappers over `_resolve_user()`
+- `SKIP_AUTH=true` env var bypasses Auth0 and falls back to `DEV_ORG_ID`/`DEV_USER_ID` for local dev
 
-### Session 10 — React login flow (MSAL)
-- Install `@azure/msal-react` and `@azure/msal-browser`
-- Create `src/auth/msalConfig.ts` with Tenant ID + Client ID (from env vars)
-- Wrap App in `MsalProvider`
-- Login page:
-  - "Sign in with Microsoft" button
-  - Redirect flow (not popup — cleaner for business users)
-- On successful login:
-  - Acquire access token silently for the API scope
-  - Store token, attach as `Authorization: Bearer <token>` header on every `fetch` call
-  - Fetch `GET /api/me` → store user name, org name, role in React context
-- Protected route: if not authenticated, redirect to login page
-- Show in top bar: user display name + organisation name
-- Logout button clears MSAL cache and returns to login page
+**React side:**
+- Installed `@auth0/auth0-react`
+- Wrapped app in `Auth0Provider` (`src/main.tsx`) with domain, client ID, audience from env
+- `authFetch` callback in `App.tsx` and `AdminPanel.tsx` — calls `getAccessTokenSilently()` and attaches `Authorization: Bearer <token>` on every request
+- Unauthenticated users are redirected to Auth0 login automatically
 
-### Session 11 — Role-based access + user context in UI
+### Session 10 — Role-based access enforcement
 - Role-based UI rules:
-  - `viewer`: can see review screen and export, cannot upload or edit rows
-  - `editor`: full access except admin pages
-  - `admin`: full access + can see admin panel
-- Enforce roles on the backend (middleware checks role per endpoint group)
-- Add a minimal admin panel page in the UI:
-  - List users in the org
-  - Show their role and email
-  - (Full user creation is done by you via API for now — UI is read-only)
-- Show user initials avatar in top bar with role badge
-- Test: log in as two different users in different orgs, confirm data isolation visually
+  - `user`: can upload, map, fix, export — cannot access admin panel
+  - `admin`: full access including admin panel
+- Enforce `user_access` check on backend admin endpoints (return 403 if not admin)
+- Hide admin panel entry point in the UI for non-admin users
+- Test: log in as a regular user, confirm admin panel is not accessible
+
+### Session 11 — Auth testing and hardening
+- End-to-end test of full auth flow: create user in Auth0, log in, confirm correct organisation loads
+- Test data isolation: confirm a token from org A cannot retrieve org B's sessions or data
+- Test disable flow: disable a user in the admin panel, confirm they are blocked on next request
+- Fix anything found during testing
 
 ---
 
@@ -321,10 +309,10 @@ Each session covers one area of operations: the process is documented and then w
 | 5 | 5 | 0 | ✅ App stable, polished & frozen |
 | 6 | 6+7 | 1 | ✅ organisations + users tables, org_id on all tables, all queries scoped |
 | 7 | — | — | ✅ combined into session 6 |
-| 8 | 8 | 1 | Admin API endpoints |
-| 9 | 9 | 2 | Azure Entra setup + FastAPI JWT |
-| 10 | 10 | 2 | React MSAL login flow |
-| 11 | 11 | 2 | Role-based access + admin panel |
+| 8 | 8 | 1 | ✅ Admin API endpoints + admin panel UI |
+| 9 | 9 | 2 | ✅ Auth0 setup + FastAPI JWT + React login |
+| 10 | 10 | 2 | Role-based access enforcement |
+| 11 | 11 | 2 | Auth testing and hardening |
 | 12 | 12 | 3 | Azure SQL provisioned + schema migrated |
 | 13 | 13 | 3 | FastAPI deployed to App Service |
 | 14 | 14 | 3 | React deployed to Static Web Apps |
@@ -345,8 +333,8 @@ Each session covers one area of operations: the process is documented and then w
 
 ## Decisions already made
 - Multi-tenancy: shared DB + `organisation_id` (Option A)
-- Auth: Azure Entra ID
-- User provisioning: admin-created (no self-sign-up)
+- Auth: Auth0 (SPA + API, RS256 JWT, JWKS validation)
+- User provisioning: admin-created in Auth0 + matched by email in the users table (no self-sign-up)
 - Regions: global, not per-org
 - Billing: deferred, out of scope
 

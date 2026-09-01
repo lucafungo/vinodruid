@@ -30,6 +30,7 @@ The frontend communicates with the backend exclusively through the REST API. Fil
 | PapaParse | 5.5 | CSV parsing |
 | JSZip | 3.10 | ZIP file generation for bulk export |
 | Lucide React | 0.546 | Icons |
+| @auth0/auth0-react | 2.x | Auth0 login, token acquisition |
 
 ### Backend
 
@@ -40,6 +41,7 @@ The frontend communicates with the backend exclusively through the REST API. Fil
 | Uvicorn | 0.32+ | ASGI server |
 | pyodbc | 5.0+ | SQL Server connectivity |
 | python-dotenv | 1.0+ | Environment variable loading |
+| python-jose[cryptography] | 3.3+ | JWT validation (Auth0 RS256 tokens) |
 
 ---
 
@@ -47,9 +49,11 @@ The frontend communicates with the backend exclusively through the REST API. Fil
 
 | File | Responsibility |
 |---|---|
-| `server.py` | FastAPI app, all API endpoints, DB schema creation and seeding, `get_org_id()` multi-tenancy helper |
+| `server.py` | FastAPI app, all API endpoints, DB schema creation and seeding, JWT validation, `get_org_id()`/`get_user_id()` helpers |
 | `queries.sql` | SQL utility file — diagnostics, isolation tests, migration, maintenance |
-| `src/App.tsx` | Central application state, all data processing and validation logic |
+| `src/main.tsx` | App entry point — Auth0Provider wrapper with domain, client ID, audience from env |
+| `src/App.tsx` | Central application state, all data processing and validation logic, `authFetch` wrapper |
+| `src/components/AdminPanel.tsx` | Admin panel UI — tabs for organisations, users, sessions, audit trail; full CRUD for orgs and users |
 | `src/components/SchemaMapper.tsx` | Column mapping step — auto-detection, auto-calc hints, either/or gate |
 | `src/components/RowEditor.tsx` | Row-level error correction modal |
 | `src/components/FileUploader.tsx` | Drag-and-drop file input with CSV/XLSX format detection |
@@ -288,6 +292,18 @@ All endpoints are served by FastAPI at `http://localhost:3000`. Interactive docs
 | DELETE | `/api/master/clients` | Clear master client list |
 | GET | `/api/master/regions` | Get full regions reference table |
 | GET | `/api/me` | Validates org + user exist and match; returns display_name, org name, user_access |
+| GET | `/api/admin/organisations` | List all organisations (admin only) |
+| POST | `/api/admin/organisations` | Create a new organisation (admin only) |
+| PUT | `/api/admin/organisations/{id}` | Update an organisation (admin only) |
+| POST | `/api/admin/organisations/{id}/disable` | Disable an organisation (admin only) |
+| POST | `/api/admin/organisations/{id}/enable` | Enable an organisation (admin only) |
+| GET | `/api/admin/users` | List all users across all orgs (admin only) |
+| POST | `/api/admin/users` | Create a user and assign to an org (admin only) |
+| PUT | `/api/admin/users/{id}` | Update a user (admin only) |
+| POST | `/api/admin/users/{id}/disable` | Disable a user (admin only) |
+| POST | `/api/admin/users/{id}/enable` | Enable a user (admin only) |
+| GET | `/api/admin/sessions` | List all sessions across all orgs (admin only) |
+| GET | `/api/admin/audit` | Last 500 audit trail entries across all orgs (admin only) |
 
 ---
 
@@ -310,13 +326,33 @@ npm run dev
 ```
 Starts both servers via `concurrently`. Frontend at `:5173`, API at `:3000`.
 
+### Authentication
+
+Every request to the backend must carry an Auth0 JWT as `Authorization: Bearer <token>`.
+
+The backend validates the token using Auth0's public JWKS endpoint (`_get_jwks()`), verifies the RS256 signature, audience, and issuer, then extracts the `email` claim and looks up the matching user in the `users` table. The resolved `(organisation_id, user_id)` is cached on `request.state` for the lifetime of the request.
+
+On the frontend, `Auth0Provider` (configured in `src/main.tsx`) handles the Auth0 redirect flow. Both `App.tsx` and `AdminPanel.tsx` use an `authFetch` callback — a thin wrapper around `fetch` that calls `getAccessTokenSilently()` and injects the `Authorization` header before every API call. Unauthenticated users are redirected to the Auth0 login page automatically.
+
+To add a new user: create them in the Auth0 dashboard (User Management → Users), then add a matching row to the `users` table with the same email address and set their `organisation_id` and `user_access`.
+
 ### Environment (`.env`)
 ```
 SQL_SERVER=WOLUCA\SQLEXPRESS
 SQL_DATABASE=WineOnboarding
+
+# Auth0 — backend token validation
+AUTH0_DOMAIN=winedruid.uk.auth0.com
+AUTH0_AUDIENCE=https://vinodruid/api
+
+# Set SKIP_AUTH=true to bypass Auth0 for local dev (uses DEV_ORG_ID / DEV_USER_ID instead)
+SKIP_AUTH=false
 DEV_ORG_ID=1
 DEV_USER_ID=1
-```
-Windows Authentication — no password required on a local machine.
 
-`DEV_ORG_ID` and `DEV_USER_ID` are the Phase 1 multi-tenancy bypass. On every request, the backend reads these values and treats the caller as that org and user. `GET /api/me` validates both exist in the database and that the user belongs to the org — if not, the frontend shows a clear error screen instead of loading the app. Phase 2 replaces both env vars with real JWT extraction without touching any endpoint code.
+# Auth0 — frontend (Vite exposes VITE_ prefixed vars to the browser)
+VITE_AUTH0_DOMAIN=winedruid.uk.auth0.com
+VITE_AUTH0_CLIENT_ID=yhJIivaXl5ZvtmpHTpyY4D2cKCRbiNpS
+VITE_AUTH0_AUDIENCE=https://vinodruid/api
+```
+Windows Authentication for SQL Server — no password required on a local machine.

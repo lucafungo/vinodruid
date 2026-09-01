@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useAuth0 } from '@auth0/auth0-react';
 
 const API = 'http://localhost:3000';
 
@@ -76,6 +77,16 @@ const btnDanger = 'px-3 py-1 text-xs rounded border border-gray-300 bg-white hov
 const btnSuccess = 'px-3 py-1 text-xs rounded border border-gray-300 bg-white hover:bg-green-50 hover:border-green-300 hover:text-green-700 cursor-pointer font-sans';
 
 export function AdminPanel({ onBack, currentUserForename, currentOrgName }: Props) {
+  const { getAccessTokenSilently } = useAuth0();
+
+  const authFetch = useCallback(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const token = await getAccessTokenSilently();
+    return fetch(input, {
+      ...init,
+      headers: { ...init?.headers, Authorization: `Bearer ${token}` },
+    });
+  }, [getAccessTokenSilently]);
+
   const [section, setSection] = useState<Section>('orgs');
   const [orgs, setOrgs] = useState<Org[]>([]);
   const [users, setUsers] = useState<User[]>([]);
@@ -102,31 +113,31 @@ export function AdminPanel({ onBack, currentUserForename, currentOrgName }: Prop
     setError(null);
     try {
       if (sec === 'orgs') {
-        const r = await fetch(`${API}/api/admin/organisations`);
+        const r = await authFetch(`${API}/api/admin/organisations`);
         setOrgs(await r.json());
       } else if (sec === 'users') {
         const [ur, or_] = await Promise.all([
-          fetch(`${API}/api/admin/users`),
+          authFetch(`${API}/api/admin/users`),
           orgs.length ? Promise.resolve(null) : fetch(`${API}/api/admin/organisations`),
         ]);
         setUsers(await ur.json());
         if (or_) setOrgs(await or_.json());
       } else if (sec === 'sessions') {
         const [sr, or_] = await Promise.all([
-          fetch(`${API}/api/admin/sessions`),
+          authFetch(`${API}/api/admin/sessions`),
           orgs.length ? Promise.resolve(null) : fetch(`${API}/api/admin/organisations`),
         ]);
         setSessions(await sr.json());
         if (or_) setOrgs(await or_.json());
       } else if (sec === 'audit') {
         const [ar, or_] = await Promise.all([
-          fetch(`${API}/api/admin/audit`),
+          authFetch(`${API}/api/admin/audit`),
           orgs.length ? Promise.resolve(null) : fetch(`${API}/api/admin/organisations`),
         ]);
         setAudit(await ar.json());
         if (or_) setOrgs(await or_.json());
       } else if (sec === 'regions') {
-        const r = await fetch(`${API}/api/master/regions`);
+        const r = await authFetch(`${API}/api/master/regions`);
         setRegions(await r.json());
       }
     } catch {
@@ -146,7 +157,7 @@ export function AdminPanel({ onBack, currentUserForename, currentOrgName }: Prop
   const saveOrg = async () => {
     if (!orgForm) return;
     const isNew = !orgForm.organisation_id;
-    await fetch(
+    await authFetch(
       isNew ? `${API}/api/admin/organisations` : `${API}/api/admin/organisations/${orgForm.organisation_id}`,
       { method: isNew ? 'POST' : 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(orgForm) }
     );
@@ -155,14 +166,14 @@ export function AdminPanel({ onBack, currentUserForename, currentOrgName }: Prop
   };
 
   const toggleOrg = async (id: number, disable: boolean) => {
-    await fetch(`${API}/api/admin/organisations/${id}/${disable ? 'disable' : 'enable'}`, { method: 'POST' });
+    await authFetch(`${API}/api/admin/organisations/${id}/${disable ? 'disable' : 'enable'}`, { method: 'POST' });
     loadSection('orgs');
   };
 
   const saveUser = async () => {
     if (!userForm) return;
     const isNew = !userForm.user_id;
-    await fetch(
+    await authFetch(
       isNew ? `${API}/api/admin/users` : `${API}/api/admin/users/${userForm.user_id}`,
       { method: isNew ? 'POST' : 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(userForm) }
     );
@@ -171,7 +182,7 @@ export function AdminPanel({ onBack, currentUserForename, currentOrgName }: Prop
   };
 
   const toggleUser = async (id: number, disable: boolean) => {
-    await fetch(`${API}/api/admin/users/${id}/${disable ? 'disable' : 'enable'}`, { method: 'POST' });
+    await authFetch(`${API}/api/admin/users/${id}/${disable ? 'disable' : 'enable'}`, { method: 'POST' });
     loadSection('users');
   };
 

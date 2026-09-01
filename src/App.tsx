@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useAuth0 } from '@auth0/auth0-react';
 import ExcelJS from 'exceljs';
 import { normalizeBottleSize, normalizeVintage, normalizeCurrency, normalizeDate } from './utils/normalization';
 import { WINE_TYPES, WINE_SUBTYPES, TYPE_TO_SUBTYPE, findClosestMatch } from './utils/wineValidation';
@@ -462,8 +463,18 @@ interface ProcessedRow {
 }
 
 export default function App() {
+  const { getAccessTokenSilently, isAuthenticated, loginWithRedirect, isLoading: authLoading } = useAuth0();
+
+  const authFetch = useCallback(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const token = await getAccessTokenSilently();
+    return fetch(input, {
+      ...init,
+      headers: { ...init?.headers, Authorization: `Bearer ${token}` },
+    });
+  }, [getAccessTokenSilently]);
+
   // --- State Management ---
-  
+
   // Workflow control
   const [step, setStep] = useState<Step>('upload');
   const [dataType, setDataType] = useState<DataType>('inventory');
@@ -547,7 +558,7 @@ export default function App() {
     if (currentSessionId && step !== 'upload') {
       const updateSession = async () => {
         try {
-          await fetch(`/api/sessions/${currentSessionId}`, {
+          await authFetch(`/api/sessions/${currentSessionId}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -577,7 +588,7 @@ export default function App() {
   const loadSessions = async () => {
     setIsLoadingSessions(true);
     try {
-      const response = await fetch('/api/sessions');
+      const response = await authFetch('/api/sessions');
       if (response.ok) {
         const data = await response.json();
         setSessions(data);
@@ -593,7 +604,7 @@ export default function App() {
     setIsAiProcessing(true); // Re-use for loading state
     console.log('[Resume] Loading session:', sessionId);
     try {
-      const response = await fetch(`/api/sessions/${sessionId}`);
+      const response = await authFetch(`/api/sessions/${sessionId}`);
       if (response.ok) {
         const data = await response.json();
         
@@ -698,7 +709,7 @@ export default function App() {
     if (!confirmed) return;
     
     try {
-      const response = await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+      const response = await authFetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
       if (response.ok) {
         loadSessions();
         if (currentSessionId === sessionId) {
@@ -721,7 +732,7 @@ export default function App() {
         .filter(name => name !== '');
       const newMasterList = Array.from(new Set([...masterCellars, ...validCellarNames]));
       setMasterCellars(newMasterList);
-      fetch('/api/master/cellars', {
+      authFetch('/api/master/cellars', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ names: newMasterList }),
@@ -733,7 +744,7 @@ export default function App() {
         .filter(code => code !== '');
       const newMasterList = Array.from(new Set([...masterClients, ...validAccountCodes]));
       setMasterClients(newMasterList);
-      fetch('/api/master/clients', {
+      authFetch('/api/master/clients', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ codes: newMasterList }),
@@ -744,11 +755,11 @@ export default function App() {
   const handleClearMasterData = (type: string) => {
     if (type === 'cellars') {
       setMasterCellars([]);
-      fetch('/api/master/cellars', { method: 'DELETE' })
+      authFetch('/api/master/cellars', { method: 'DELETE' })
         .catch(e => console.error("Failed to clear master cellars", e));
     } else if (type === 'contacts' || type === 'private_clients' || type === 'trade_clients' || type === 'suppliers') {
       setMasterClients([]);
-      fetch('/api/master/clients', { method: 'DELETE' })
+      authFetch('/api/master/clients', { method: 'DELETE' })
         .catch(e => console.error("Failed to clear master clients", e));
     }
   };
@@ -851,7 +862,7 @@ export default function App() {
 
   // Fetch identity from backend — validates org + user and updates org-scoped storage key
   useEffect(() => {
-    fetch('http://localhost:3000/api/me')
+    authFetch('/api/me')
       .then(r => r.json().then(d => ({ ok: r.ok, data: d })))
       .then(({ ok, data }) => {
         if (!ok) {
@@ -907,7 +918,7 @@ export default function App() {
     // Update session status in DB
     if (currentSessionId) {
       try {
-        await fetch(`/api/sessions/${currentSessionId}`, {
+        await authFetch(`/api/sessions/${currentSessionId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: 'completed' })
@@ -936,7 +947,7 @@ export default function App() {
 
   const handleReopenSession = async (sessionId: number, type: DataType) => {
     try {
-      await fetch(`/api/sessions/${sessionId}`, {
+      await authFetch(`/api/sessions/${sessionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'in_progress' })
@@ -1082,7 +1093,7 @@ export default function App() {
 
     // Mark session as completed
     if (currentSessionId) {
-      fetch(`/api/sessions/${currentSessionId}`, {
+      authFetch(`/api/sessions/${currentSessionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'completed' })
@@ -1162,7 +1173,7 @@ export default function App() {
     
     // Create initial session in DB
     try {
-      fetch('/api/sessions', {
+      authFetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1202,7 +1213,7 @@ export default function App() {
         ignoredPriceWarnings: Array.from(ignoredPriceWarnings)
       };
 
-      const response = await fetch('/api/sessions', {
+      const response = await authFetch('/api/sessions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1259,7 +1270,7 @@ export default function App() {
     } else {
       // Sync to existing session
       try {
-        await fetch(`/api/sessions/${currentSessionId}`, {
+        await authFetch(`/api/sessions/${currentSessionId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1420,7 +1431,7 @@ export default function App() {
         // Log what we are syncing
         console.log('[Sync] Persisting row update to DB:', { id: updatedRow.id, keys: Object.keys(rowToSync.raw || {}) });
         
-        fetch(`/api/sessions/${currentSessionId}/rows/${updatedRow.id + 1}`, {
+        authFetch(`/api/sessions/${currentSessionId}/rows/${updatedRow.id + 1}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1769,7 +1780,7 @@ export default function App() {
     if (rowsToUpdate.length === 0) return;
 
     try {
-      await fetch(`/api/sessions/${currentSessionId}/rows/bulk`, {
+      await authFetch(`/api/sessions/${currentSessionId}/rows/bulk`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rows: rowsToUpdate })
@@ -1819,7 +1830,7 @@ export default function App() {
           return { id: r.id, raw: redactedRaw };
         });
 
-        const res = await fetch('/api/system/ai-fix', {
+        const res = await authFetch('/api/system/ai-fix', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -2834,7 +2845,7 @@ export default function App() {
     if (sessionIdToArchive) {
       try {
         console.log('[App] Archiving session in DB:', sessionIdToArchive);
-        const resp = await fetch(`/api/sessions/${sessionIdToArchive}`, {
+        const resp = await authFetch(`/api/sessions/${sessionIdToArchive}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ disabled: 1, status: 'abandoned' })
@@ -3034,6 +3045,9 @@ export default function App() {
       />
     );
   }
+
+  if (authLoading) return null;
+  if (!isAuthenticated) { loginWithRedirect(); return null; }
 
   if (authError) {
     return (
