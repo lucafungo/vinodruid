@@ -14,6 +14,7 @@ import { DuplicateComparisonModal } from './components/DuplicateComparisonModal'
 import { AddLocationModal } from './components/AddLocationModal';
 import { AiFixReviewModal } from './components/AiFixReviewModal';
 import { AdminPanel } from './components/AdminPanel';
+import LoginPage from './components/LoginPage';
 
 // --- Types ---
 
@@ -463,7 +464,7 @@ interface ProcessedRow {
 }
 
 export default function App() {
-  const { getAccessTokenSilently, isAuthenticated, loginWithRedirect, logout, isLoading: authLoading } = useAuth0();
+  const { getAccessTokenSilently, isAuthenticated, logout, isLoading: authLoading } = useAuth0();
 
   const authFetch = useCallback(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const token = await getAccessTokenSilently();
@@ -3047,7 +3048,7 @@ export default function App() {
   }
 
   if (authLoading) return null;
-  if (!isAuthenticated) { loginWithRedirect(); return null; }
+  if (!isAuthenticated) { return <LoginPage />; }
 
   if (authError) {
     return (

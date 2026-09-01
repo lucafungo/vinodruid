@@ -22,6 +22,7 @@ interface User {
   forename: string | null;
   surname: string | null;
   display_name: string | null;
+  alias: string | null;
   email: string | null;
   user_access: string | null;
   user_type: string | null;
@@ -98,6 +99,8 @@ export function AdminPanel({ onBack, currentUserForename, currentOrgName }: Prop
 
   const [orgForm, setOrgForm] = useState<Partial<Org> | null>(null);
   const [userForm, setUserForm] = useState<Partial<User> | null>(null);
+  const [newUserSetupUrl, setNewUserSetupUrl] = useState<string | null>(null);
+  const [auth0Warning, setAuth0Warning] = useState<string | null>(null);
 
   const [search, setSearch] = useState('');
   const [orgFilter, setOrgFilter] = useState('');
@@ -173,10 +176,26 @@ export function AdminPanel({ onBack, currentUserForename, currentOrgName }: Prop
   const saveUser = async () => {
     if (!userForm) return;
     const isNew = !userForm.user_id;
-    await authFetch(
-      isNew ? `${API}/api/admin/users` : `${API}/api/admin/users/${userForm.user_id}`,
-      { method: isNew ? 'POST' : 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(userForm) }
-    );
+    let resp: Response;
+    try {
+      resp = await authFetch(
+        isNew ? `${API}/api/admin/users` : `${API}/api/admin/users/${userForm.user_id}`,
+        { method: isNew ? 'POST' : 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(userForm) }
+      );
+    } catch {
+      setError('Network error — is the backend running?');
+      return;
+    }
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      setError((err as { detail?: string }).detail || `Save failed (${resp.status}).`);
+      return;
+    }
+    if (isNew) {
+      const result = await resp.json() as { setup_url?: string; auth0_error?: string };
+      if (result.setup_url) setNewUserSetupUrl(result.setup_url);
+      if (result.auth0_error) setAuth0Warning(`User created in the database, but Auth0 registration failed: ${result.auth0_error}. Add this user manually in the Auth0 dashboard.`);
+    }
     setUserForm(null);
     loadSection('users');
   };
@@ -348,8 +367,45 @@ export function AdminPanel({ onBack, currentUserForename, currentOrgName }: Prop
           <div>
             <div className="flex items-center justify-between mb-4">
               <h1 className="text-base font-semibold">Users</h1>
-              <button className={btnPrimary} onClick={() => setUserForm({})}>+ New User</button>
+              <button className={btnPrimary} onClick={() => { setUserForm({}); setNewUserSetupUrl(null); setAuth0Warning(null); }}>+ New User</button>
             </div>
+
+            {auth0Warning && (
+              <div className="border border-amber-200 bg-amber-50 rounded p-4 mb-4 flex items-start justify-between gap-3">
+                <p className="text-sm text-amber-800 flex-1">{auth0Warning}</p>
+                <button
+                  className="px-2 py-1 text-xs rounded border border-amber-200 bg-white text-amber-700 hover:bg-amber-50 cursor-pointer font-sans flex-shrink-0"
+                  onClick={() => setAuth0Warning(null)}
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
+            {newUserSetupUrl && (
+              <div className="border border-green-200 bg-green-50 rounded p-4 mb-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-green-800 mb-1">User created. Send this link to let them set their password:</p>
+                    <p className="text-xs font-mono text-green-700 break-all bg-white border border-green-200 rounded px-2 py-1.5">{newUserSetupUrl}</p>
+                  </div>
+                  <div className="flex gap-1.5 flex-shrink-0">
+                    <button
+                      className="px-2 py-1 text-xs rounded border border-green-300 bg-white text-green-700 hover:bg-green-50 cursor-pointer font-sans"
+                      onClick={() => navigator.clipboard.writeText(newUserSetupUrl)}
+                    >
+                      Copy
+                    </button>
+                    <button
+                      className="px-2 py-1 text-xs rounded border border-gray-200 bg-white text-gray-500 hover:bg-gray-50 cursor-pointer font-sans"
+                      onClick={() => setNewUserSetupUrl(null)}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {userForm !== null && (
               <div className="border border-gray-200 rounded p-4 mb-4 bg-gray-50">
@@ -366,6 +422,10 @@ export function AdminPanel({ onBack, currentUserForename, currentOrgName }: Prop
                   <div>
                     <label className="text-xs text-gray-500 block mb-1">Display Name</label>
                     <input className={inputCls} value={userForm.display_name || ''} onChange={e => setUserForm({ ...userForm, display_name: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-500 block mb-1">Alias</label>
+                    <input className={inputCls} value={userForm.alias || ''} onChange={e => setUserForm({ ...userForm, alias: e.target.value })} />
                   </div>
                   <div>
                     <label className="text-xs text-gray-500 block mb-1">Email</label>

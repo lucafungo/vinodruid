@@ -33,6 +33,10 @@ _AUTH0_AUDIENCE = os.getenv("AUTH0_AUDIENCE", "")
 _SKIP_AUTH = os.getenv("SKIP_AUTH", "false").lower() == "true"
 _jwks_cache: dict = {}
 
+_AUTH0_MGMT_CLIENT_ID = os.getenv("AUTH0_MGMT_CLIENT_ID", "")
+_AUTH0_MGMT_CLIENT_SECRET = os.getenv("AUTH0_MGMT_CLIENT_SECRET", "")
+_mgmt_token_cache: dict = {}
+
 
 def _get_jwks() -> dict:
     global _jwks_cache
@@ -67,6 +71,85 @@ def _verify_token(token: str) -> dict:
                            audience=_AUTH0_AUDIENCE, issuer=f"https://{_AUTH0_DOMAIN}/")
     except Exception as exc:
         raise HTTPException(status_code=401, detail=f"Token invalid: {exc}")
+
+
+def _get_mgmt_token() -> str:
+    global _mgmt_token_cache
+    import time, certifi, urllib.parse
+    if _mgmt_token_cache.get("token") and _mgmt_token_cache.get("expires_at", 0) > time.time() + 60:
+        return _mgmt_token_cache["token"]
+    payload = urllib.parse.urlencode({
+        "grant_type": "client_credentials",
+        "client_id": _AUTH0_MGMT_CLIENT_ID,
+        "client_secret": _AUTH0_MGMT_CLIENT_SECRET,
+        "audience": f"https://{_AUTH0_DOMAIN}/api/v2/",
+    }).encode()
+    ctx = ssl.create_default_context(cafile=certifi.where())
+    req = _urllib.Request(
+        f"https://{_AUTH0_DOMAIN}/oauth/token",
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with _urllib.urlopen(req, timeout=10, context=ctx) as resp:
+            data = json.loads(resp.read())
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Auth0 management token fetch failed: {exc}")
+    _mgmt_token_cache = {"token": data["access_token"], "expires_at": time.time() + data.get("expires_in", 86400)}
+    return _mgmt_token_cache["token"]
+
+
+def _provision_auth0_user(email: str) -> str:
+    """Creates a new Auth0 user and returns a password-setup URL valid for 7 days."""
+    import certifi, secrets, urllib.error
+    token = _get_mgmt_token()
+    ctx = ssl.create_default_context(cafile=certifi.where())
+
+    create_payload = json.dumps({
+        "email": email,
+        "connection": "Username-Password-Authentication",
+        "password": secrets.token_urlsafe(32),
+        "email_verified": True,
+    }).encode()
+    req = _urllib.Request(
+        f"https://{_AUTH0_DOMAIN}/api/v2/users",
+        data=create_payload,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with _urllib.urlopen(req, timeout=10, context=ctx) as resp:
+            user_data = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode(errors="replace")
+        if exc.code == 409:
+            raise HTTPException(status_code=409, detail=f"User already exists in Auth0: {email}")
+        raise HTTPException(status_code=502, detail=f"Auth0 user creation failed ({exc.code}): {body_text}")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Auth0 user creation failed: {exc}")
+
+    ticket_payload = json.dumps({
+        "user_id": user_data["user_id"],
+        "mark_email_as_verified": True,
+        "ttl_sec": 604800,
+    }).encode()
+    req = _urllib.Request(
+        f"https://{_AUTH0_DOMAIN}/api/v2/tickets/password-change",
+        data=ticket_payload,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with _urllib.urlopen(req, timeout=10, context=ctx) as resp:
+            ticket_data = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode(errors="replace")
+        raise HTTPException(status_code=502, detail=f"Auth0 password ticket creation failed ({exc.code}): {body_text}")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Auth0 password ticket creation failed: {exc}")
+
+    return ticket_data["ticket"]
 
 
 def _resolve_user(request: Request) -> tuple:
@@ -466,15 +549,25 @@ def admin_list_users():
 @app.post("/api/admin/users")
 async def admin_create_user(request: Request):
     body = await request.json()
+    email = body.get("email") or None
+    setup_url = None
+    auth0_error = None
+    if email and _AUTH0_MGMT_CLIENT_ID:
+        try:
+            setup_url = _provision_auth0_user(email)
+        except HTTPException as exc:
+            auth0_error = exc.detail
+        except Exception as exc:
+            auth0_error = str(exc)
     with get_db() as conn:
         conn.execute(
-            "INSERT INTO users (organisation_id, forename, surname, display_name, email, user_access, user_type) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO users (organisation_id, forename, surname, display_name, alias, email, user_access, user_type) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (body.get("organisation_id"), body.get("forename") or None, body.get("surname") or None,
-             body.get("display_name") or None, body.get("email") or None,
+             body.get("display_name") or None, body.get("alias") or None, email,
              body.get("user_access", "user"), body.get("user_type") or None)
         )
-    return {"success": True}
+    return {"success": True, "setup_url": setup_url, "auth0_error": auth0_error}
 
 
 @app.put("/api/admin/users/{user_id}")
@@ -482,10 +575,10 @@ async def admin_update_user(user_id: int, request: Request):
     body = await request.json()
     with get_db() as conn:
         conn.execute(
-            "UPDATE users SET organisation_id=?, forename=?, surname=?, display_name=?, email=?, "
+            "UPDATE users SET organisation_id=?, forename=?, surname=?, display_name=?, alias=?, email=?, "
             "user_access=?, updated=CURRENT_TIMESTAMP WHERE user_id=?",
             (body.get("organisation_id"), body.get("forename") or None, body.get("surname") or None,
-             body.get("display_name") or None, body.get("email") or None,
+             body.get("display_name") or None, body.get("alias") or None, body.get("email") or None,
              body.get("user_access"), user_id)
         )
     return {"success": True}
@@ -534,143 +627,6 @@ def admin_list_audit():
             "a.change_type, a.created_at, "
             "o.name AS organisation_name, "
             "u.display_name AS created_by_name "
-            "FROM audit_trail a "
-            "LEFT JOIN organisations o ON a.organisation_id = o.organisation_id "
-            "LEFT JOIN users u ON a.created_by = u.user_id "
-            "ORDER BY a.created_at DESC"
-        )
-        return rows_as_dicts(cursor)
-
-
-# --- Admin ---
-
-@app.get("/api/admin/organisations")
-def admin_list_orgs():
-    with get_db() as conn:
-        cursor = conn.execute("SELECT * FROM organisations ORDER BY organisation_id")
-        return rows_as_dicts(cursor)
-
-
-@app.post("/api/admin/organisations")
-async def admin_create_org(request: Request):
-    body = await request.json()
-    with get_db() as conn:
-        conn.execute(
-            "INSERT INTO organisations (name, organisation_type_ref, default_country_ref, default_currency_ref) "
-            "VALUES (?, ?, ?, ?)",
-            (body.get("name"), body.get("organisation_type_ref") or None,
-             body.get("default_country_ref") or None, body.get("default_currency_ref") or None)
-        )
-    return {"success": True}
-
-
-@app.put("/api/admin/organisations/{org_id}")
-async def admin_update_org(org_id: int, request: Request):
-    body = await request.json()
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE organisations SET name=?, organisation_type_ref=?, default_country_ref=?, "
-            "default_currency_ref=?, updated=CURRENT_TIMESTAMP WHERE organisation_id=?",
-            (body.get("name"), body.get("organisation_type_ref") or None,
-             body.get("default_country_ref") or None, body.get("default_currency_ref") or None, org_id)
-        )
-    return {"success": True}
-
-
-@app.post("/api/admin/organisations/{org_id}/disable")
-def admin_disable_org(org_id: int):
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE organisations SET disabled=1, updated=CURRENT_TIMESTAMP WHERE organisation_id=?", (org_id,)
-        )
-    return {"success": True}
-
-
-@app.post("/api/admin/organisations/{org_id}/enable")
-def admin_enable_org(org_id: int):
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE organisations SET disabled=0, updated=CURRENT_TIMESTAMP WHERE organisation_id=?", (org_id,)
-        )
-    return {"success": True}
-
-
-@app.get("/api/admin/users")
-def admin_list_users():
-    with get_db() as conn:
-        cursor = conn.execute(
-            "SELECT u.*, o.name AS organisation_name "
-            "FROM users u LEFT JOIN organisations o ON u.organisation_id = o.organisation_id "
-            "ORDER BY u.user_id"
-        )
-        return rows_as_dicts(cursor)
-
-
-@app.post("/api/admin/users")
-async def admin_create_user(request: Request):
-    body = await request.json()
-    with get_db() as conn:
-        conn.execute(
-            "INSERT INTO users (organisation_id, forename, surname, display_name, email, user_access, user_type) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (body.get("organisation_id"), body.get("forename") or None, body.get("surname") or None,
-             body.get("display_name") or None, body.get("email") or None,
-             body.get("user_access", "user"), body.get("user_type") or None)
-        )
-    return {"success": True}
-
-
-@app.put("/api/admin/users/{user_id}")
-async def admin_update_user(user_id: int, request: Request):
-    body = await request.json()
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE users SET organisation_id=?, forename=?, surname=?, display_name=?, email=?, "
-            "user_access=?, updated=CURRENT_TIMESTAMP WHERE user_id=?",
-            (body.get("organisation_id"), body.get("forename") or None, body.get("surname") or None,
-             body.get("display_name") or None, body.get("email") or None,
-             body.get("user_access"), user_id)
-        )
-    return {"success": True}
-
-
-@app.post("/api/admin/users/{user_id}/disable")
-def admin_disable_user(user_id: int):
-    with get_db() as conn:
-        conn.execute("UPDATE users SET disabled=1, updated=CURRENT_TIMESTAMP WHERE user_id=?", (user_id,))
-    return {"success": True}
-
-
-@app.post("/api/admin/users/{user_id}/enable")
-def admin_enable_user(user_id: int):
-    with get_db() as conn:
-        conn.execute("UPDATE users SET disabled=0, updated=CURRENT_TIMESTAMP WHERE user_id=?", (user_id,))
-    return {"success": True}
-
-
-@app.get("/api/admin/sessions")
-def admin_list_sessions():
-    with get_db() as conn:
-        cursor = conn.execute(
-            "SELECT s.id, s.organisation_id, o.name AS organisation_name, s.session_type, s.status, "
-            "s.created_at, s.updated_at, "
-            "(SELECT COUNT(*) FROM session_rows sr WHERE sr.session_id = s.id) AS total_rows, "
-            "u.display_name AS created_by_name "
-            "FROM sessions s "
-            "LEFT JOIN organisations o ON s.organisation_id = o.organisation_id "
-            "LEFT JOIN users u ON s.created_by = u.user_id "
-            "WHERE s.disabled = 0 ORDER BY s.created_at DESC"
-        )
-        return rows_as_dicts(cursor)
-
-
-@app.get("/api/admin/audit")
-def admin_list_audit():
-    with get_db() as conn:
-        cursor = conn.execute(
-            "SELECT TOP 500 a.id, a.session_id, a.field_name, a.old_value, a.new_value, "
-            "a.change_type, a.created_at, "
-            "o.name AS organisation_name, u.display_name AS created_by_name "
             "FROM audit_trail a "
             "LEFT JOIN organisations o ON a.organisation_id = o.organisation_id "
             "LEFT JOIN users u ON a.created_by = u.user_id "
