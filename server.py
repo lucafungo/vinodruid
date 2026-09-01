@@ -1,5 +1,6 @@
 import os
 import json
+import ssl
 import urllib.request as _urllib
 from contextlib import contextmanager
 from typing import Any, Optional
@@ -9,7 +10,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from jose import jwt as _jwt
-from jose.exceptions import JWTError
+
 
 load_dotenv(override=True)
 
@@ -36,13 +37,23 @@ _jwks_cache: dict = {}
 def _get_jwks() -> dict:
     global _jwks_cache
     if not _jwks_cache and _AUTH0_DOMAIN:
-        with _urllib.urlopen(f"https://{_AUTH0_DOMAIN}/.well-known/jwks.json", timeout=5) as resp:
-            _jwks_cache = json.loads(resp.read())
+        try:
+            import certifi
+            ctx = ssl.create_default_context(cafile=certifi.where())
+            with _urllib.urlopen(f"https://{_AUTH0_DOMAIN}/.well-known/jwks.json", timeout=10, context=ctx) as resp:
+                _jwks_cache = json.loads(resp.read())
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"Could not reach Auth0 JWKS endpoint: {exc}")
     return _jwks_cache
 
 
 def _verify_token(token: str) -> dict:
-    jwks = _get_jwks()
+    try:
+        jwks = _get_jwks()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"JWKS fetch failed: {exc}")
     try:
         header = _jwt.get_unverified_header(token)
     except Exception:
@@ -54,7 +65,7 @@ def _verify_token(token: str) -> dict:
     try:
         return _jwt.decode(token, rsa_key, algorithms=["RS256"],
                            audience=_AUTH0_AUDIENCE, issuer=f"https://{_AUTH0_DOMAIN}/")
-    except JWTError as exc:
+    except Exception as exc:
         raise HTTPException(status_code=401, detail=f"Token invalid: {exc}")
 
 
@@ -355,7 +366,7 @@ def get_me(request: Request):
         if not org:
             raise HTTPException(
                 status_code=403,
-                detail=f"Organisation {org_id} not found. Check DEV_ORG_ID in your .env file."
+                detail=f"Organisation {org_id} not found or is disabled."
             )
 
         cursor = conn.execute(
@@ -367,7 +378,7 @@ def get_me(request: Request):
         if not user:
             raise HTTPException(
                 status_code=403,
-                detail=f"User {user_id} not found. Check DEV_USER_ID in your .env file."
+                detail=f"User {user_id} not found or is disabled."
             )
 
         if user["organisation_id"] != org_id:

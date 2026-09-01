@@ -463,7 +463,7 @@ interface ProcessedRow {
 }
 
 export default function App() {
-  const { getAccessTokenSilently, isAuthenticated, loginWithRedirect, isLoading: authLoading } = useAuth0();
+  const { getAccessTokenSilently, isAuthenticated, loginWithRedirect, logout, isLoading: authLoading } = useAuth0();
 
   const authFetch = useCallback(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const token = await getAccessTokenSilently();
@@ -530,20 +530,20 @@ export default function App() {
   const [showAddLocationModal, setShowAddLocationModal] = useState(false);
 
   useEffect(() => {
-    fetch('/api/master/cellars')
+    authFetch('/api/master/cellars')
       .then(r => r.json())
       .then(data => setMasterCellars(data))
       .catch(e => console.error("Failed to load master cellars", e));
-    fetch('/api/master/clients')
+    authFetch('/api/master/clients')
       .then(r => r.json())
       .then(data => setMasterClients(data))
       .catch(e => console.error("Failed to load master clients", e));
-    fetch('/api/master/regions')
+    authFetch('/api/master/regions')
       .then(r => r.json())
       .then(data => setRegionRefData(data))
       .catch(e => console.error("Failed to load regions", e));
     loadSessions();
-  }, []);
+  }, [authFetch]);
 
   useEffect(() => {
     if (step === 'upload') {
@@ -879,8 +879,8 @@ export default function App() {
           try { setCompletedTasks(raw ? JSON.parse(raw) : {}); } catch { setCompletedTasks({}); }
         }
       })
-      .catch(() => {}); // keep using cached org id — backend may still be starting
-  }, []);
+      .catch(err => console.error('[/api/me]', err));
+  }, [authFetch]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -3107,6 +3107,12 @@ export default function App() {
               Admin
             </button>
           )}
+          <button
+            onClick={() => logout({ logoutParams: { returnTo: window.location.origin } })}
+            className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg border border-gray-200 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors"
+          >
+            Log out
+          </button>
           <button
             onClick={() => setIsRulesModalOpen(true)}
             className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg border border-gray-200 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors"

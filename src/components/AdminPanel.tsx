@@ -118,21 +118,21 @@ export function AdminPanel({ onBack, currentUserForename, currentOrgName }: Prop
       } else if (sec === 'users') {
         const [ur, or_] = await Promise.all([
           authFetch(`${API}/api/admin/users`),
-          orgs.length ? Promise.resolve(null) : fetch(`${API}/api/admin/organisations`),
+          orgs.length ? Promise.resolve(null) : authFetch(`${API}/api/admin/organisations`),
         ]);
         setUsers(await ur.json());
         if (or_) setOrgs(await or_.json());
       } else if (sec === 'sessions') {
         const [sr, or_] = await Promise.all([
           authFetch(`${API}/api/admin/sessions`),
-          orgs.length ? Promise.resolve(null) : fetch(`${API}/api/admin/organisations`),
+          orgs.length ? Promise.resolve(null) : authFetch(`${API}/api/admin/organisations`),
         ]);
         setSessions(await sr.json());
         if (or_) setOrgs(await or_.json());
       } else if (sec === 'audit') {
         const [ar, or_] = await Promise.all([
           authFetch(`${API}/api/admin/audit`),
-          orgs.length ? Promise.resolve(null) : fetch(`${API}/api/admin/organisations`),
+          orgs.length ? Promise.resolve(null) : authFetch(`${API}/api/admin/organisations`),
         ]);
         setAudit(await ar.json());
         if (or_) setOrgs(await or_.json());
