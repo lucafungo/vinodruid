@@ -121,25 +121,33 @@ Admin panel UI (`src/components/AdminPanel.tsx`) — tabs for Organisations, Use
 
 ## Phase 2 — Auth0 Authentication (3 sessions)
 
-### Session 9 — Auth0 setup + JWT validation + React login ✅
+### Session 9 — Auth0 setup + JWT validation + React login + auto-provisioning ✅
 **Auth0 side (done manually):**
 - Created SPA application on Auth0 dashboard (domain: `winedruid.uk.auth0.com`)
 - Created API with identifier `https://vinodruid/api`
 - Configured allowed callback/logout URLs for `http://localhost:5173`
+- Added Auth0 Action on post-login trigger to include `email` claim in access token
+- Created M2M application (vinoDruid Management) authorised against the Management API with `create:users` and `create:user_tickets` scopes
 
 **FastAPI side:**
-- Added `python-jose[cryptography]` to requirements
-- `_get_jwks()` fetches and caches Auth0's public JWKS on first request
+- Added `python-jose[cryptography]` and `certifi` to requirements
+- `_get_jwks()` fetches and caches Auth0's public JWKS using certifi CA bundle (fixes Windows SSL cert store issue)
 - `_verify_token(token)` validates RS256 signature, audience, issuer
 - `_resolve_user(request)` extracts `email` from token claims, looks up `users` table, caches result on `request.state`
 - `get_org_id()` and `get_user_id()` are thin wrappers over `_resolve_user()`
 - `SKIP_AUTH=true` env var bypasses Auth0 and falls back to `DEV_ORG_ID`/`DEV_USER_ID` for local dev
+- `_get_mgmt_token()` fetches a cached M2M access token from Auth0 Management API
+- `_provision_auth0_user(email)` creates a user in Auth0 and returns a 7-day password-setup ticket URL
+- `POST /api/admin/users` now auto-provisions the user in Auth0 before the DB insert; returns `setup_url` for the admin to send to the new user; Auth0 errors are non-fatal (user is always created in DB)
+- `alias` field added to user INSERT and UPDATE queries
 
 **React side:**
 - Installed `@auth0/auth0-react`
-- Wrapped app in `Auth0Provider` (`src/main.tsx`) with domain, client ID, audience from env
+- Wrapped app in `Auth0Provider` (`src/main.tsx`) with domain, client ID, audience, and `openid profile email` scopes
 - `authFetch` callback in `App.tsx` and `AdminPanel.tsx` — calls `getAccessTokenSilently()` and attaches `Authorization: Bearer <token>` on every request
-- Unauthenticated users are redirected to Auth0 login automatically
+- Custom `LoginPage.tsx` shown to unauthenticated users, styled to match the app
+- Logout button in the app header
+- Admin panel user form: `alias` field added; after creating a new user the UI shows a copyable password-setup link in a green banner, and an amber warning if Auth0 provisioning failed
 
 ### Session 10 — Role-based access enforcement
 - Role-based UI rules:
@@ -181,8 +189,8 @@ Admin panel UI (`src/components/AdminPanel.tsx`) — tabs for Organisations, Use
 - `startup.sh`: `uvicorn server:app --host 0.0.0.0 --port 8000`
 - App Service Configuration (environment variables):
   - `DB_CONNECTION_STRING` → Key Vault reference
-  - `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`
-  - `DISABLE_AUTH=false`
+  - `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`, `AUTH0_MGMT_CLIENT_ID`, `AUTH0_MGMT_CLIENT_SECRET`
+  - `SKIP_AUTH=false`
 - Create Azure Key Vault:
   - Store DB connection string as a secret
   - Grant App Service managed identity access to Key Vault
@@ -196,10 +204,9 @@ Admin panel UI (`src/components/AdminPanel.tsx`) — tabs for Organisations, Use
 - `staticwebapp.config.json`:
   - SPA fallback: all routes → `index.html`
   - API proxy: `/api/*` → `https://vinodruid-api.azurewebsites.net`
-- Update MSAL config with production redirect URI (the Static Web App URL)
-- Update Entra App Registration redirect URIs with the Static Web App URL
-- Set React env vars (`VITE_ENTRA_TENANT_ID`, `VITE_ENTRA_CLIENT_ID`) in Static Web App config
-- Test: open the Azure URL, login with Microsoft, see the home screen
+- Update Auth0 SPA application: add the Static Web App URL to allowed callback/logout/web origins
+- Set React env vars (`VITE_AUTH0_DOMAIN`, `VITE_AUTH0_CLIENT_ID`, `VITE_AUTH0_AUDIENCE`) in Static Web App config
+- Test: open the Azure URL, log in via Auth0, see the home screen
 
 ### Session 15 — Key Vault, CORS, environment hardening
 - Lock down CORS in server.py: replace `allow_origins=["*"]` with the specific Static Web App URL
@@ -261,7 +268,7 @@ Using the live Azure environment:
   - All endpoints require valid JWT ✓
   - All queries scoped to organisation_id ✓
   - No secrets in code or App Service config (Key Vault only) ✓
-  - Entra tokens validated with JWKS (not just decoded) ✓
+  - Auth0 tokens validated with JWKS (not just decoded) ✓
   - Admin endpoints require `role = 'admin'` ✓
 - Fix anything that needs attention
 - Platform is considered live and stable after this session
@@ -278,8 +285,8 @@ Each session covers one area of operations: the process is documented and then w
 - Confirm the new org can log in and sees only their own empty workspace
 
 ### Session 22 — Creating and managing users
-- Document: create user in Entra ID, assign to org, set role, confirm login works
-- Document: revoke access when a user leaves (disable in Entra + flag in DB)
+- Document: create user via admin panel (auto-registers in Auth0, sends password-setup link), confirm login works
+- Document: revoke access when a user leaves (disable in Auth0 + disable in admin panel)
 - Document: change a user's role
 - Walk through each scenario, confirm all three work
 

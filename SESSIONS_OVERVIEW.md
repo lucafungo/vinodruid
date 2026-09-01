@@ -40,7 +40,7 @@ Build the backend endpoints an administrator needs to create organisations and m
 ## Phase 2 — Authentication (3 sessions)
 
 Session 9: Auth0 and login flow
-Set up Auth0 as the identity provider. Add JWT token validation to the backend so every request is tied to a known user and organisation by matching the email in the token against the users table. Wrap the React app in the Auth0 provider, add a login redirect for unauthenticated users, and attach the access token to every API call automatically. A dev bypass stays available via an environment variable for local work without logging in. Done.
+Set up Auth0 as the identity provider. JWT token validation added to the backend so every request is tied to a known user and organisation by matching the email in the token against the users table. The React app is wrapped in the Auth0 provider with a custom login page matching the app style. An access token is attached automatically to every API call. When an admin creates a user in the admin panel the backend also registers that user in Auth0 via the Management API and returns a 7-day password-setup link the admin can send directly to the new user. A dev bypass stays available via an environment variable. Done.
 
 Session 10: Roles enforcement
 Enforce the three access levels on both backend and frontend: viewer (read and export only), editor (full import access), admin (full access including the admin panel). Backend checks the user's access level on each endpoint group. Frontend hides controls the user cannot use.
