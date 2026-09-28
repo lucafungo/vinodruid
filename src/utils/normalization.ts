@@ -133,6 +133,28 @@ export function normalizeCurrency(rawPrice: string | number): { value: number | 
   return { value, currency };
 }
 
+const COUNTRY_ALIASES: Record<string, string> = {
+  'uk': 'United Kingdom',
+  'gb': 'United Kingdom',
+  'great britain': 'United Kingdom',
+  'britain': 'United Kingdom',
+  'england': 'United Kingdom',
+  'us': 'United States',
+  'usa': 'United States',
+  'united states of america': 'United States',
+  'u.s.a.': 'United States',
+  'u.s.': 'United States',
+  'nz': 'New Zealand',
+  'sa': 'South Africa',
+  'rsa': 'South Africa',
+};
+
+export function normalizeCountry(raw: string): string {
+  if (!raw) return raw;
+  const key = raw.trim().toLowerCase();
+  return COUNTRY_ALIASES[key] ?? raw.trim();
+}
+
 function isValidDate(d: number, m: number, y: number): boolean {
   if (m < 1 || m > 12) return false;
   if (y < 1900 || y > 2100) return false;

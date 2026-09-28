@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth0 } from '@auth0/auth0-react';
 import ExcelJS from 'exceljs';
-import { normalizeBottleSize, normalizeVintage, normalizeCurrency, normalizeDate } from './utils/normalization';
+import { normalizeBottleSize, normalizeVintage, normalizeCurrency, normalizeDate, normalizeCountry } from './utils/normalization';
 import { WINE_TYPES, WINE_SUBTYPES, TYPE_TO_SUBTYPE, findClosestMatch } from './utils/wineValidation';
 import { CheckCircle2, AlertCircle, HelpCircle, ArrowRight, Table, Sparkles, RefreshCcw, RotateCcw, RotateCw, Trash2, Download, Filter, LayoutGrid, Copy, Check, Edit2, X, Calculator, History, Play, Plus } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -15,6 +15,7 @@ import { AddLocationModal } from './components/AddLocationModal';
 import { AiFixReviewModal } from './components/AiFixReviewModal';
 import { AdminPanel } from './components/AdminPanel';
 import LoginPage from './components/LoginPage';
+import { ManualEntryGrid } from './components/ManualEntryGrid';
 
 // --- Types ---
 
@@ -30,7 +31,7 @@ type DataType = 'inventory' | 'client_reserves' | 'contacts' | 'private_clients'
  * - map: Mapping CSV headers to schema fields.
  * - review: Validating and editing the data.
  */
-type Step = 'upload' | 'map' | 'review';
+type Step = 'upload' | 'map' | 'review' | 'manual';
 
 /**
  * Schema definition for each data type.
@@ -479,6 +480,14 @@ export default function App() {
   // Workflow control
   const [step, setStep] = useState<Step>('upload');
   const [dataType, setDataType] = useState<DataType>('inventory');
+
+  // Manual entry
+  const [showColumnPicker, setShowColumnPicker] = useState(false);
+  const [pickerSelectedKeys, setPickerSelectedKeys] = useState<Set<string>>(new Set());
+
+  // Column swap
+  const [swapSourceKey, setSwapSourceKey] = useState<string | null>(null);
+  const [swapPickingTarget, setSwapPickingTarget] = useState(false);
   
   // Data storage
   const [rawData, setRawData] = useState<any[]>([]); // Current working copy of raw data
@@ -1193,6 +1202,105 @@ export default function App() {
     }
     
     setStep(initialStep);
+  };
+
+  const handleSwapColumns = (targetKey: string) => {
+    if (!swapSourceKey || swapSourceKey === targetKey) {
+      setSwapSourceKey(null);
+      setSwapPickingTarget(false);
+      return;
+    }
+    setHistory(prev => [...prev, JSON.parse(JSON.stringify(rawData))].slice(-20));
+
+    let newMapping = { ...mapping };
+    let newRawData = rawData;
+
+    if (Object.keys(mapping).length > 0) {
+      // File upload: swap the mapping so each schema key reads from the other's original column
+      const temp = newMapping[swapSourceKey];
+      newMapping[swapSourceKey] = newMapping[targetKey];
+      newMapping[targetKey] = temp;
+      setMapping(newMapping);
+    } else {
+      // Manual entry: values are stored directly under schema keys, swap them
+      newRawData = rawData.map(row => {
+        const r = { ...row };
+        const temp = r[swapSourceKey];
+        r[swapSourceKey] = r[targetKey];
+        r[targetKey] = temp;
+        return r;
+      });
+      setRawData(newRawData);
+    }
+
+    const processed = processData(newRawData, newMapping);
+    setProcessedData(processed);
+    setSwapSourceKey(null);
+    setSwapPickingTarget(false);
+  };
+
+  const handleOpenManualEntry = () => {
+    const schema = getCurrentSchema();
+    const requiredKeys = new Set(schema.fields.filter(f => f.required).map(f => f.key));
+    const colPrefKey = `vd_cols_${dataType}`;
+    let initial: Set<string>;
+    try {
+      const saved = localStorage.getItem(colPrefKey);
+      if (saved) {
+        const savedOptional = new Set<string>(JSON.parse(saved));
+        initial = new Set([...Array.from(requiredKeys), ...Array.from(savedOptional)]);
+      } else {
+        initial = new Set(schema.fields.map(f => f.key));
+      }
+    } catch {
+      initial = new Set(schema.fields.map(f => f.key));
+    }
+    setPickerSelectedKeys(initial);
+    setShowColumnPicker(true);
+  };
+
+  const handleStartManualEntry = () => {
+    const schema = getCurrentSchema();
+    const requiredKeys = new Set(schema.fields.filter(f => f.required).map(f => f.key));
+    const optionalSelected = new Set(Array.from(pickerSelectedKeys).filter(k => !requiredKeys.has(k)));
+    try {
+      localStorage.setItem(`vd_cols_${dataType}`, JSON.stringify(Array.from(optionalSelected)));
+    } catch {}
+    setShowColumnPicker(false);
+    setStep('manual');
+  };
+
+  const handleManualSubmit = (rows: Record<string, string>[]) => {
+    const dataWithIds = rows.map((r, i) => ({ ...r, id: i }));
+    setRawData(dataWithIds);
+    setOriginalRawData(JSON.parse(JSON.stringify(dataWithIds)));
+    setHeaders(Array.from(pickerSelectedKeys));
+    const name = `Manual Entry — ${SCHEMAS[dataType].label}`;
+    setFileName(name);
+    setManualEditsMap({});
+    setIgnoredDuplicates(new Set());
+    setCurrentSessionId(null);
+    setMapping({});
+
+    const processed = processData(dataWithIds, {});
+    setProcessedData(processed);
+
+    authFetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionType: `${dataType}: Manual Entry`,
+        rows: dataWithIds,
+        fields: { mapping: {}, fileName: name, dataType, currentStep: 'review' }
+      })
+    }).then(res => res.json()).then(result => {
+      if (result.id) {
+        setCurrentSessionId(result.id);
+        loadSessions();
+      }
+    }).catch(e => console.error('Failed to create manual entry session', e));
+
+    setStep('review');
   };
 
   /**
@@ -2061,16 +2169,17 @@ export default function App() {
            result[field.key] = rawValue;
         }
         else if (field.key === 'country' && refData.length > 0 && !isMissing) {
-           const val = String(rawValue).trim().toLowerCase();
+           const normalized = normalizeCountry(String(rawValue));
+           const val = normalized.toLowerCase();
            const isValid = refData.some(r => r.Region?.toLowerCase() === val && r.Type?.toLowerCase() === 'country');
-           
+
            if (!isValid) {
              result.status = 'red';
              result.errors.push(`Invalid Country: '${rawValue}'. Not found in reference table.`);
              hasError = true;
              result.fieldErrors.push(field.key);
            }
-           result[field.key] = rawValue;
+           result[field.key] = normalized;
         }
         
         // --- Validation: Required Fields ---
@@ -3088,7 +3197,7 @@ export default function App() {
             <p className="text-sm uppercase tracking-widest text-black/50">Wine Data Onboarding</p>
             <div className="h-1 w-1 rounded-full bg-black/20" />
             <p className="text-xs font-bold text-black/30 uppercase tracking-tighter">
-              Step {step === 'upload' ? '1' : step === 'map' ? '2' : '3'} of 3
+              Step {step === 'upload' ? '1' : step === 'map' ? '2' : step === 'manual' ? '2' : '3'} of {step === 'manual' ? '2' : '3'}
             </p>
           </div>
         </div>
@@ -3262,7 +3371,27 @@ export default function App() {
 
               {/* Only show upload zone if NO active session and NOT marked as completed */}
               {!(getActiveSessionForType(dataType) || completedTasks[dataType]) ? (
-                <FileUploader onUpload={handleUpload} />
+                <div className="space-y-4">
+                  <FileUploader onUpload={handleUpload} />
+                  <div className="max-w-2xl mx-auto flex items-center gap-4">
+                    <div className="flex-1 h-px bg-black/10" />
+                    <span className="text-xs text-black/30 uppercase tracking-widest">or</span>
+                    <div className="flex-1 h-px bg-black/10" />
+                  </div>
+                  <div className="max-w-2xl mx-auto flex justify-center">
+                    <button
+                      onClick={handleOpenManualEntry}
+                      className="group flex items-center gap-3 px-5 py-3 bg-white border border-black/5 rounded-xl shadow-sm hover:border-black/20 hover:shadow-md transition-all"
+                    >
+                      <div className="p-2 bg-black/5 rounded-lg group-hover:bg-black/10 transition-colors">
+                        <Plus size={16} className="text-black/60 group-hover:text-black" />
+                      </div>
+                      <p className="text-xs font-bold uppercase tracking-wider text-black/60 group-hover:text-black">
+                        Start from Empty
+                      </p>
+                    </button>
+                  </div>
+                </div>
               ) : (() => {
                 const activeSession = getActiveSessionForType(dataType);
                 const completedSession = getCompletedSessionForType(dataType);
@@ -3335,6 +3464,29 @@ export default function App() {
                   </div>
                 );
               })()}
+            </div>
+          )}
+
+          {step === 'manual' && (
+            <div className="max-w-[98vw] mx-auto space-y-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-2xl font-serif font-light">New {SCHEMAS[dataType].label} Entry</h2>
+                  <p className="text-sm text-black/40 mt-1">Fill in the rows below. Required fields are marked with *</p>
+                </div>
+                <button
+                  onClick={goHome}
+                  className="flex items-center gap-2 px-4 py-2 bg-white border border-black/10 rounded-xl text-sm text-black/60 hover:text-black hover:border-black/20 transition-colors"
+                >
+                  <X size={14} />
+                  Cancel
+                </button>
+              </div>
+              <ManualEntryGrid
+                fields={getCurrentSchema().fields.filter(f => pickerSelectedKeys.has(f.key))}
+                onSubmit={handleManualSubmit}
+                onCancel={goHome}
+              />
             </div>
           )}
 
@@ -3576,11 +3728,64 @@ export default function App() {
                     <thead className="sticky top-0 bg-[#f8f9fa] z-10">
                       <tr className="text-[11px] font-medium text-[#5f6368] border-b border-[#dadce0]">
                         <th className="w-12 px-2 py-1.5 text-center border-r border-[#dadce0] bg-[#f8f9fa] sticky left-0 z-20"></th>
-                        {SCHEMAS[dataType].fields.map(field => (
-                          <th key={field.key} className="px-3 py-1.5 border-r border-[#dadce0] font-normal min-w-[150px]">
-                            {field.label}
-                          </th>
-                        ))}
+                        {SCHEMAS[dataType].fields.map(field => {
+                          const isSource = swapSourceKey === field.key;
+                          const isTarget = swapPickingTarget && swapSourceKey !== field.key;
+                          return (
+                            <th
+                              key={field.key}
+                              className={`px-3 py-1.5 border-r border-[#dadce0] font-normal min-w-[150px] select-none group/hdr ${
+                                isSource ? 'bg-indigo-50 text-indigo-700' :
+                                isTarget ? 'cursor-pointer hover:bg-indigo-50 hover:text-indigo-700' : ''
+                              }`}
+                              onClick={() => {
+                                if (swapPickingTarget && !isSource) handleSwapColumns(field.key);
+                              }}
+                            >
+                              <div className="flex items-center gap-1.5">
+                                <span>{field.label}</span>
+                                {isSource && !swapPickingTarget && (
+                                  <>
+                                    <button
+                                      onClick={e => { e.stopPropagation(); setSwapPickingTarget(true); }}
+                                      className="px-1.5 py-0.5 text-[10px] bg-indigo-100 text-indigo-700 rounded hover:bg-indigo-200 whitespace-nowrap"
+                                    >
+                                      Swap with…
+                                    </button>
+                                    <button
+                                      onClick={e => { e.stopPropagation(); setSwapSourceKey(null); }}
+                                      className="px-1 py-0.5 text-[10px] text-black/30 hover:text-black/60 rounded"
+                                    >
+                                      ✕
+                                    </button>
+                                  </>
+                                )}
+                                {isSource && swapPickingTarget && (
+                                  <button
+                                    onClick={e => { e.stopPropagation(); setSwapSourceKey(null); setSwapPickingTarget(false); }}
+                                    className="px-1.5 py-0.5 text-[10px] bg-rose-100 text-rose-600 rounded hover:bg-rose-200 whitespace-nowrap"
+                                  >
+                                    Cancel
+                                  </button>
+                                )}
+                                {isTarget && (
+                                  <span className="px-1.5 py-0.5 text-[10px] bg-indigo-100 text-indigo-600 rounded whitespace-nowrap">
+                                    click to swap
+                                  </span>
+                                )}
+                                {!isSource && !swapPickingTarget && (
+                                  <button
+                                    onClick={e => { e.stopPropagation(); setSwapSourceKey(field.key); setSwapPickingTarget(false); }}
+                                    className="px-1 py-0.5 text-[10px] text-black/0 group-hover/hdr:text-black/40 rounded transition-colors"
+                                    title="Swap this column with another"
+                                  >
+                                    ⇄
+                                  </button>
+                                )}
+                              </div>
+                            </th>
+                          );
+                        })}
                         <th className="px-3 py-1.5 w-32 font-normal border-l border-[#dadce0] sticky right-0 bg-[#f8f9fa] z-20 text-center">Status</th>
                       </tr>
                     </thead>
@@ -3910,6 +4115,89 @@ export default function App() {
           onClose={() => setShowAddLocationModal(false)}
         />
       )}
+
+      {showColumnPicker && (() => {
+        const schema = getCurrentSchema();
+        const requiredFields = schema.fields.filter(f => f.required);
+        const optionalFields = schema.fields.filter(f => !f.required);
+        return (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full max-h-[80vh] flex flex-col">
+              <div className="p-6 border-b border-black/10">
+                <h2 className="text-xl font-serif font-medium">Choose columns for {SCHEMAS[dataType].label}</h2>
+                <p className="text-sm text-black/50 mt-1">Required fields are always included. Select the optional columns you need.</p>
+              </div>
+              <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-widest text-black/30 mb-3">Required — always included</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {requiredFields.map(f => (
+                      <div key={f.key} className="flex items-center gap-2 px-3 py-2 bg-black/[0.02] rounded-lg opacity-60">
+                        <div className="w-4 h-4 rounded border-2 border-black/30 bg-black/10 flex items-center justify-center flex-shrink-0">
+                          <Check className="w-2.5 h-2.5 text-black/60" />
+                        </div>
+                        <span className="text-sm text-black/70">{f.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-xs font-bold uppercase tracking-widest text-black/30">Optional</p>
+                    <div className="flex gap-2 text-xs">
+                      <button
+                        onClick={() => setPickerSelectedKeys(prev => new Set([...Array.from(prev), ...optionalFields.map(f => f.key)]))}
+                        className="text-indigo-600 hover:underline"
+                      >All</button>
+                      <span className="text-black/20">·</span>
+                      <button
+                        onClick={() => setPickerSelectedKeys(new Set(requiredFields.map(f => f.key)))}
+                        className="text-black/40 hover:underline"
+                      >None</button>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {optionalFields.map(f => {
+                      const checked = pickerSelectedKeys.has(f.key);
+                      return (
+                        <label key={f.key} className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-black/[0.02] cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={e => {
+                              const next = new Set(pickerSelectedKeys);
+                              if (e.target.checked) next.add(f.key); else next.delete(f.key);
+                              setPickerSelectedKeys(next);
+                            }}
+                            className="rounded"
+                          />
+                          <span className="text-sm text-black/70">{f.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+              <div className="p-6 border-t border-black/10 flex justify-between items-center">
+                <p className="text-xs text-black/40">{pickerSelectedKeys.size} columns selected</p>
+                <div className="flex gap-3">
+                  <button onClick={() => setShowColumnPicker(false)} className="px-4 py-2 text-sm text-black/50 hover:text-black transition-colors">
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleStartManualEntry}
+                    className="flex items-center gap-2 px-5 py-2.5 bg-[#1A1A1A] text-white text-sm font-medium rounded-xl hover:bg-black/80 transition-colors"
+                  >
+                    Start Entering Data
+                    <ArrowRight size={14} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       </main>
 
       <RulesModal 

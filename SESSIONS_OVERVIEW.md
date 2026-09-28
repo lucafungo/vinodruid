@@ -28,10 +28,10 @@ Session 5: Bug fixes and app freeze
 All bugs from testing resolved. Key fixes: no-LWIN required fields corrected to match documented rules (Producer, Country, Region — not Wine Type), client reserves duplicate detection fixed for missing account codes, Review Changes no longer clears user decisions on duplicates and price warnings. Per-row delete button added. Duplicate and price review queues added. Download all completed files as ZIP added. App is stable and frozen pending Phase 1.
 
 
-## Phase 1 — Multi-tenant Database (3 sessions)
+## Phase 1 — Multi-tenant Database (3 sessions) — COMPLETE
 
 Sessions 6 and 7: Multi-tenant database (combined)
-Added two new tables to the database: one for organisations and one for users. Added an organisation ID column to every data table (sessions, rows, audit trail, master cellars, master clients) and updated every query in the backend to filter by it. Added created by and updated by columns to track which user performed each action. Existing data was automatically assigned to organisation 1. A default organisation is seeded on first startup. Local development works via DEV_ORG_ID and DEV_USER_ID settings in the environment file. On startup the backend validates that both the organisation and the user exist and that the user belongs to that organisation. If either check fails the app shows a clear error screen instead of loading. When everything is valid the header shows a greeting with the user's name and organisation. A SQL utility file was added with queries to create and manage organisations and users, run diagnostic checks, and test data isolation.
+Added two new tables to the database: one for organisations and one for users. Added an organisation ID column to every data table (sessions, rows, audit trail, master cellars, master clients) and updated every query in the backend to filter by it. Added created by and updated by columns to track which user performed each action. Existing data was automatically assigned to organisation 1. A default organisation is seeded on first startup. Local development works via DEV_ORG_ID and DEV_USER_ID settings in the environment file. On startup the backend validates that both the organisation and the user exist and that the user belongs to that organisation. If either check fails the app shows a clear error screen instead of loading. When everything is valid the header shows a greeting with the user's name and organisation. A SQL utility file was added with queries to create and manage organisations and users, run diagnostic checks, and test data isolation. Done.
 
 Session 8: Admin API and admin panel
 Build the backend endpoints an administrator needs to create organisations and manage users: create and list organisations, create and list users, enable or disable either, view all sessions across all organisations, view the audit trail. Build the admin panel UI so an administrator can do all of this from the browser. Access control is prepared but not enforced until Auth0 is live. Done.
@@ -58,7 +58,7 @@ Session 13: Backend on Azure
 Deploy the Python backend to Azure App Service. Connect it to the database via credentials stored in Key Vault. Confirm the API responds correctly.
 
 Session 14: Frontend on Azure
-Deploy the React frontend to Azure Static Web Apps with auto-deploy on code push. Fix routing for the single-page app. Update Entra ID redirect URLs to the live domain and confirm the full app loads.
+Deploy the React frontend to Azure Static Web Apps with auto-deploy on code push. Fix routing for the single-page app. Update Auth0 redirect URLs to the live domain and confirm the full app loads.
 
 Session 15: Secrets and hardening
 Move all connection strings and secrets into Azure Key Vault. Restrict the API to only accept requests from the frontend domain. Enable Managed Identity so the backend connects to the database without any stored credentials.
