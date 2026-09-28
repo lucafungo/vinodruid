@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth0 } from '@auth0/auth0-react';
 import ExcelJS from 'exceljs';
 import { normalizeBottleSize, normalizeVintage, normalizeCurrency, normalizeDate, normalizeCountry } from './utils/normalization';
 import { WINE_TYPES, WINE_SUBTYPES, TYPE_TO_SUBTYPE, findClosestMatch } from './utils/wineValidation';
-import { CheckCircle2, AlertCircle, HelpCircle, ArrowRight, Table, Sparkles, RefreshCcw, RotateCcw, RotateCw, Trash2, Download, Filter, LayoutGrid, Copy, Check, Edit2, X, Calculator, History, Play, Plus } from 'lucide-react';
+import { CheckCircle2, AlertCircle, HelpCircle, ArrowRight, Table, Sparkles, RefreshCcw, RotateCcw, RotateCw, Trash2, Download, Upload, Filter, LayoutGrid, Copy, Check, Edit2, X, Calculator, History, Play, Plus } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { FileUploader } from './components/FileUploader';
 import { SchemaMapper } from './components/SchemaMapper';
@@ -488,6 +488,9 @@ export default function App() {
   // Column swap
   const [swapSourceKey, setSwapSourceKey] = useState<string | null>(null);
   const [swapPickingTarget, setSwapPickingTarget] = useState(false);
+
+  // Corrections upload
+  const correctionsInputRef = useRef<HTMLInputElement>(null);
   
   // Data storage
   const [rawData, setRawData] = useState<any[]>([]); // Current working copy of raw data
@@ -1116,7 +1119,7 @@ export default function App() {
     if (errorRows.length === 0) return;
 
     const currentSchema = getCurrentSchema();
-    const csvHeaders = [...currentSchema.fields.map(f => f.label), 'Errors to Fix'].join(',');
+    const csvHeaders = [...currentSchema.fields.map(f => f.label), 'Errors to Fix', '__row_id__'].join(',');
 
     const rows = errorRows.map(row => {
       const fields = currentSchema.fields.map(field => {
@@ -1132,6 +1135,7 @@ export default function App() {
       });
       const errorsVal = row.errors?.join('; ') || '';
       fields.push(`"${errorsVal.replace(/"/g, '""')}"`);
+      fields.push(String(row.id));
       return fields.join(',');
     });
 
@@ -1145,6 +1149,97 @@ export default function App() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  const parseCSVLine = (line: string): string[] => {
+    const result: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
+        else inQuotes = !inQuotes;
+      } else if (ch === ',' && !inQuotes) {
+        result.push(current);
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+    result.push(current);
+    return result;
+  };
+
+  const handleUploadCorrections = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string;
+      const lines = text.split('\n').map(l => l.trimEnd()).filter(l => l.trim());
+      if (lines.length < 2) return;
+
+      const headers = parseCSVLine(lines[0]);
+      const rowIdIdx = headers.findIndex(h => h === '__row_id__');
+      const currentSchema = getCurrentSchema();
+      const labelToKey: Record<string, string> = {};
+      currentSchema.fields.forEach(f => { labelToKey[f.label] = f.key; });
+
+      const correctionRows = lines.slice(1).map(line => {
+        const values = parseCSVLine(line);
+        const row: Record<string, any> = {};
+        headers.forEach((h, i) => {
+          if (h === 'Errors to Fix') return;
+          if (h === '__row_id__') { row.__row_id__ = parseInt(values[i], 10); return; }
+          const key = labelToKey[h];
+          if (key) row[key] = values[i] ?? '';
+        });
+        return row;
+      });
+
+      setHistory(prev => [...prev, JSON.parse(JSON.stringify(rawData))].slice(-20));
+
+      let newRawData = rawData.map(r => ({ ...r }));
+
+      if (rowIdIdx !== -1) {
+        correctionRows.forEach(corrRow => {
+          const id = corrRow.__row_id__;
+          const idx = newRawData.findIndex(r => r.id === id);
+          if (idx === -1) return;
+          const updatedRow = { ...newRawData[idx] };
+          Object.entries(corrRow).forEach(([key, val]) => {
+            if (key === '__row_id__') return;
+            updatedRow[key] = val;
+            const mappedHeader = mapping[key];
+            if (mappedHeader) updatedRow[mappedHeader] = val;
+          });
+          newRawData[idx] = updatedRow;
+        });
+      } else {
+        // Fallback: replace red rows by position
+        const redIds = processedData.filter(r => r.status === 'red').map(r => r.id);
+        correctionRows.forEach((corrRow, i) => {
+          const id = redIds[i];
+          if (id === undefined) return;
+          const idx = newRawData.findIndex(r => r.id === id);
+          if (idx === -1) return;
+          const updatedRow = { ...newRawData[idx] };
+          Object.entries(corrRow).forEach(([key, val]) => {
+            updatedRow[key] = val;
+            const mappedHeader = mapping[key];
+            if (mappedHeader) updatedRow[mappedHeader] = val;
+          });
+          newRawData[idx] = updatedRow;
+        });
+      }
+
+      setRawData(newRawData);
+      const processed = processData(newRawData, mapping);
+      setProcessedData(processed);
+      e.target.value = '';
+    };
+    reader.readAsText(file);
   };
 
   /**
@@ -3250,13 +3345,29 @@ export default function App() {
               Start New
             </button>
             {showOnlyErrors && processedData.some(r => r.status === 'red') && (
-              <button
-                onClick={handleExportErrors}
-                className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider bg-rose-600 text-white px-6 py-2 rounded-full shadow-lg hover:scale-105 transition-all"
-              >
-                <Download size={14} />
-                Export Errors ({processedData.filter(r => r.status === 'red').length})
-              </button>
+              <>
+                <input
+                  type="file"
+                  accept=".csv"
+                  ref={correctionsInputRef}
+                  onChange={handleUploadCorrections}
+                  className="hidden"
+                />
+                <button
+                  onClick={handleExportErrors}
+                  className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider bg-rose-600 text-white px-6 py-2 rounded-full shadow-lg hover:scale-105 transition-all"
+                >
+                  <Download size={14} />
+                  Export Errors ({processedData.filter(r => r.status === 'red').length})
+                </button>
+                <button
+                  onClick={() => correctionsInputRef.current?.click()}
+                  className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider bg-white text-rose-600 border border-rose-200 px-6 py-2 rounded-full shadow-sm hover:bg-rose-50 transition-all"
+                >
+                  <Upload size={14} />
+                  Upload Corrections
+                </button>
+              </>
             )}
             <button
               onClick={handleExport}
