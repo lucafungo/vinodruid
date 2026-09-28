@@ -149,13 +149,51 @@ Admin panel UI (`src/components/AdminPanel.tsx`) — tabs for Organisations, Use
 - Logout button in the app header
 - Admin panel user form: `alias` field added; after creating a new user the UI shows a copyable password-setup link in a green banner, and an amber warning if Auth0 provisioning failed
 
-### Session 10 — Role-based access enforcement
-- Role-based UI rules:
-  - `user`: can upload, map, fix, export — cannot access admin panel
-  - `admin`: full access including admin panel
-- Enforce `user_access` check on backend admin endpoints (return 403 if not admin)
-- Hide admin panel entry point in the UI for non-admin users
-- Test: log in as a regular user, confirm admin panel is not accessible
+### UX improvements — manual entry, corrections, country normalisation, column swap ✅
+Added between Sessions 9 and 10 based on internal feedback from Luc and James.
+
+**Manual entry grid (`src/components/ManualEntryGrid.tsx`):**
+- "Start from Empty" button on the upload screen opens an editable grid instead of a file upload
+- Column picker modal: required columns locked, optional columns toggleable, saved to `localStorage` per key `vd_cols_${dataType}`
+- Paste from clipboard: tab-separated columns, newline-separated rows, auto-extends the grid if pasted data exceeds current row count
+- Submit sends rows through the same `processData` validation pipeline as a file upload
+
+**Country normalisation (`src/utils/normalization.ts`):**
+- `COUNTRY_ALIASES` map + `normalizeCountry(raw: string): string`
+- Applied before validation in `processData` for every data type that has a country field
+- Aliases: UK/GB/Britain/England → United Kingdom, US/USA → United States, NZ → New Zealand, SA/RSA → South Africa
+
+**Column swap (`src/App.tsx`):**
+- Swap icon (⇄) revealed on column header hover using `group/hdr` + `group-hover/hdr:` Tailwind named groups
+- Click sets `swapSourceKey`; click a second header completes the swap
+- File upload mode: swaps both sides of the column mapping then re-validates
+- Manual entry mode: swaps the actual cell values across all rows then re-validates
+
+**Upload corrections workflow (`src/App.tsx`):**
+- Export Errors CSV now includes `__row_id__` as the last column (the row's stable index in the session)
+- "Upload Corrections" button reads a corrected CSV, matches rows by `__row_id__`, replaces those rows in the current session data, and re-validates
+- Falls back to position-based matching if the corrections file has no `__row_id__` column
+
+### Session 10 — Role-based access enforcement ✅
+Access levels simplified to two: `user` (upload, map, validate, export) and `admin` (full access including admin panel).
+
+**Backend — `_require_admin(request: Request)` helper in `server.py`:**
+```python
+def _require_admin(request: Request) -> None:
+    if _SKIP_AUTH:
+        return
+    _, user_id = _resolve_user(request)
+    with get_db() as conn:
+        cursor = conn.execute("SELECT user_access FROM users WHERE user_id = ?", (user_id,))
+        row = row_as_dict(cursor)
+    if not row or row.get("user_access") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required.")
+```
+Applied as first call in all 12 admin endpoints: `admin_list_orgs`, `admin_create_org`, `admin_update_org`, `admin_disable_org`, `admin_enable_org`, `admin_list_users`, `admin_create_user`, `admin_update_user`, `admin_disable_user`, `admin_enable_user`, `admin_list_sessions`, `admin_list_audit`.
+
+**Frontend:** Admin panel tab hidden for non-admin users. Access level (`user` / `admin`) set when creating a user via the admin panel.
+
+**MFA:** Diagnosed but deferred. Root cause: Auth0 silent auth (`prompt=none` iframe) cannot complete an MFA challenge, causing an infinite loop. Fix requires `useRefreshTokens={true}` + `cacheLocation="localstorage"` + full logout and re-login to issue a refresh token. See memory note `project_mfa_solution.md`. Dedicated session needed.
 
 ### Session 11 — Auth testing and hardening
 - End-to-end test of full auth flow: create user in Auth0, log in, confirm correct organisation loads
@@ -318,7 +356,7 @@ Each session covers one area of operations: the process is documented and then w
 | 7 | — | — | ✅ combined into session 6 |
 | 8 | 8 | 1 | ✅ Admin API endpoints + admin panel UI |
 | 9 | 9 | 2 | ✅ Auth0 setup + FastAPI JWT + React login |
-| 10 | 10 | 2 | Role-based access enforcement |
+| 10 | 10 | 2 | ✅ Role-based access enforcement (admin check on all 12 endpoints) |
 | 11 | 11 | 2 | Auth testing and hardening |
 | 12 | 12 | 3 | Azure SQL provisioned + schema migrated |
 | 13 | 13 | 3 | FastAPI deployed to App Service |

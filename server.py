@@ -193,6 +193,18 @@ def get_user_id(request: Request) -> int:
     return _resolve_user(request)[1]
 
 
+def _require_admin(request: Request) -> None:
+    """Raises 403 if the requesting user is not an admin."""
+    if _SKIP_AUTH:
+        return
+    _, user_id = _resolve_user(request)
+    with get_db() as conn:
+        cursor = conn.execute("SELECT user_access FROM users WHERE user_id = ?", (user_id,))
+        row = row_as_dict(cursor)
+    if not row or row.get("user_access") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required.")
+
+
 def make_conn_str(database: str) -> str:
     return f"DRIVER={{{DRIVER}}};SERVER={SERVER};DATABASE={database};Trusted_Connection=yes;"
 
@@ -485,7 +497,8 @@ def get_me(request: Request):
 # --- Admin ---
 
 @app.get("/api/admin/organisations")
-def admin_list_orgs():
+def admin_list_orgs(request: Request):
+    _require_admin(request)
     with get_db() as conn:
         cursor = conn.execute("SELECT * FROM organisations ORDER BY organisation_id")
         return rows_as_dicts(cursor)
@@ -493,6 +506,7 @@ def admin_list_orgs():
 
 @app.post("/api/admin/organisations")
 async def admin_create_org(request: Request):
+    _require_admin(request)
     body = await request.json()
     with get_db() as conn:
         conn.execute(
@@ -506,6 +520,7 @@ async def admin_create_org(request: Request):
 
 @app.put("/api/admin/organisations/{org_id}")
 async def admin_update_org(org_id: int, request: Request):
+    _require_admin(request)
     body = await request.json()
     with get_db() as conn:
         conn.execute(
@@ -518,7 +533,8 @@ async def admin_update_org(org_id: int, request: Request):
 
 
 @app.post("/api/admin/organisations/{org_id}/disable")
-def admin_disable_org(org_id: int):
+def admin_disable_org(org_id: int, request: Request):
+    _require_admin(request)
     with get_db() as conn:
         conn.execute(
             "UPDATE organisations SET disabled=1, updated=CURRENT_TIMESTAMP WHERE organisation_id=?", (org_id,)
@@ -527,7 +543,8 @@ def admin_disable_org(org_id: int):
 
 
 @app.post("/api/admin/organisations/{org_id}/enable")
-def admin_enable_org(org_id: int):
+def admin_enable_org(org_id: int, request: Request):
+    _require_admin(request)
     with get_db() as conn:
         conn.execute(
             "UPDATE organisations SET disabled=0, updated=CURRENT_TIMESTAMP WHERE organisation_id=?", (org_id,)
@@ -536,7 +553,8 @@ def admin_enable_org(org_id: int):
 
 
 @app.get("/api/admin/users")
-def admin_list_users():
+def admin_list_users(request: Request):
+    _require_admin(request)
     with get_db() as conn:
         cursor = conn.execute(
             "SELECT u.*, o.name AS organisation_name "
@@ -548,6 +566,7 @@ def admin_list_users():
 
 @app.post("/api/admin/users")
 async def admin_create_user(request: Request):
+    _require_admin(request)
     body = await request.json()
     email = body.get("email") or None
     setup_url = None
@@ -572,6 +591,7 @@ async def admin_create_user(request: Request):
 
 @app.put("/api/admin/users/{user_id}")
 async def admin_update_user(user_id: int, request: Request):
+    _require_admin(request)
     body = await request.json()
     with get_db() as conn:
         conn.execute(
@@ -585,7 +605,8 @@ async def admin_update_user(user_id: int, request: Request):
 
 
 @app.post("/api/admin/users/{user_id}/disable")
-def admin_disable_user(user_id: int):
+def admin_disable_user(user_id: int, request: Request):
+    _require_admin(request)
     with get_db() as conn:
         conn.execute(
             "UPDATE users SET disabled=1, updated=CURRENT_TIMESTAMP WHERE user_id=?", (user_id,)
@@ -594,7 +615,8 @@ def admin_disable_user(user_id: int):
 
 
 @app.post("/api/admin/users/{user_id}/enable")
-def admin_enable_user(user_id: int):
+def admin_enable_user(user_id: int, request: Request):
+    _require_admin(request)
     with get_db() as conn:
         conn.execute(
             "UPDATE users SET disabled=0, updated=CURRENT_TIMESTAMP WHERE user_id=?", (user_id,)
@@ -603,7 +625,8 @@ def admin_enable_user(user_id: int):
 
 
 @app.get("/api/admin/sessions")
-def admin_list_sessions():
+def admin_list_sessions(request: Request):
+    _require_admin(request)
     with get_db() as conn:
         cursor = conn.execute(
             "SELECT s.id, s.organisation_id, o.name AS organisation_name, s.session_type, s.status, "
@@ -620,7 +643,8 @@ def admin_list_sessions():
 
 
 @app.get("/api/admin/audit")
-def admin_list_audit():
+def admin_list_audit(request: Request):
+    _require_admin(request)
     with get_db() as conn:
         cursor = conn.execute(
             "SELECT TOP 500 a.id, a.session_id, a.field_name, a.old_value, a.new_value, "
