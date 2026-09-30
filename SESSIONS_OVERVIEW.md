@@ -51,6 +51,15 @@ Two access levels are in use: user and admin. All twelve admin backend endpoints
 Multi-factor authentication (added alongside Session 10)
 The Auth0 tenant was upgraded from the free tier to a paid plan, since MFA is not available at all on the free tier. A one-time password factor was enabled using an authenticator app such as Google Authenticator, and every login now requires a code after the password. Getting this working also meant changing how the app keeps a user logged in: it now uses refresh tokens instead of the previous silent background renewal, since the old method could not complete a multi-factor check without a visible screen and would otherwise get stuck in a loop. Two smaller bugs surfaced once this was in place, where the app would log the user in correctly but fail to show their name, organisation, or saved sessions. Both were found and fixed. Done.
 
+Scalability fix and LWIN bypass (added alongside Session 10)
+The app was freezing for 30 or more seconds when processing large files. A 5,000-row inventory would lock the browser tab completely until all validation was done. The fix converts the validation loop to run in chunks of 300 rows at a time, yielding control back to the browser between each chunk so the tab stays responsive. A progress bar now shows how far along validation is. The review table is paginated so the DOM never has to render thousands of rows at once. On the backend, bulk inserts now use fast_executemany in batches of 1,000 rows, and the audit log writes one summary entry per upload instead of one per row.
+
+A second change was made at the same time: when a row has a valid 7-digit LWIN, the app no longer flags errors on the wine identity fields. Name, producer, vintage, country, region, type, and sub-type are all skipped because a valid LWIN alone identifies the wine in the target system. Rows without an LWIN still need all of those fields. The validation rules modal was updated to explain this.
+
+The bulk-fix suggestion was also extended to cover type, sub-type, currency, warehouse location, tax status, and packaging type, in addition to the fields it already covered.
+
+A data error was found in the regions reference table: the region Arbois was pointing to the wrong parent chain and ending up linked to Switzerland instead of France. The Swiss and French entries both named Jura were colliding and the app was picking the wrong one. The Swiss entry was renamed to Jura (Switzerland) and Arbois was re-entered with France as its direct parent.
+
 Session 11: Testing and hardening
 End-to-end test of the full auth flow: register a new user in Auth0, log in, confirm the right organisation is loaded, test role restrictions, confirm a token from organisation A cannot access organisation B's data. Fix anything that needs attention.
 

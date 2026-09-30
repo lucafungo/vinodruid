@@ -316,6 +316,19 @@ def stringify(val: Any) -> str:
 # row. Called from create_session, update_row (and indirectly wherever row data
 # changes) so admins can review history via admin_list_audit. Never raises -
 # a failed audit write should not block the actual data change.
+# Runs the same parameterized INSERT/UPDATE statement for many rows at once via
+# pyodbc's fast_executemany, instead of one execute() call per row. A plain Python
+# loop of individual execute() calls means one network round-trip to SQL Server per
+# row — fine for a handful of rows, but a real bottleneck once files reach the
+# thousands of rows (a 5,000-row upload would otherwise be 5,000 sequential round-trips).
+# Chunked at 1000 rows per batch as a safety margin against driver/statement limits.
+def _executemany_batched(conn, sql: str, params_list: list, batch_size: int = 1000) -> None:
+    cursor = conn.cursor()
+    cursor.fast_executemany = True
+    for i in range(0, len(params_list), batch_size):
+        cursor.executemany(sql, params_list[i:i + batch_size])
+
+
 def add_audit_log(conn, session_id: int, row_id: Optional[int], field_name: Optional[str],
                   old_val: Any, new_val: Any, change_type: str, org_id: int = 1, user_id: int = 1):
     try:
@@ -783,7 +796,11 @@ def list_sessions(request: Request):
 
 # POST /api/sessions - creates a new session plus its initial rows in one go
 # (called when the frontend starts a new upload/manual-entry batch, e.g. from
-# the file upload or manual entry grid screens). Each row is also audit-logged.
+# the file upload or manual entry grid screens). Rows are inserted in batches
+# (see _executemany_batched) rather than one at a time, since a naive per-row
+# INSERT loop turns a several-thousand-row upload into several thousand
+# sequential DB round-trips. One summary audit entry is logged for the whole
+# batch instead of one per row, for the same reason.
 @app.post("/api/sessions")
 async def create_session(request: Request):
     org_id = get_org_id(request)
@@ -804,14 +821,13 @@ async def create_session(request: Request):
 
         # row_index is 1-based (matches the UNIQUE constraint on session_rows);
         # each row's full content is stored as JSON since columns vary by session_type
-        for i, row_data in enumerate(rows):
-            row_cursor = conn.execute(
-                "INSERT INTO session_rows (session_id, row_index, row_content, organisation_id) "
-                "OUTPUT INSERTED.id VALUES (?, ?, ?, ?)",
-                (session_id, i + 1, json.dumps(row_data), org_id)
+        if rows:
+            _executemany_batched(
+                conn,
+                "INSERT INTO session_rows (session_id, row_index, row_content, organisation_id) VALUES (?, ?, ?, ?)",
+                [(session_id, i + 1, json.dumps(row_data), org_id) for i, row_data in enumerate(rows)]
             )
-            row_id = row_cursor.fetchone()[0]
-            add_audit_log(conn, session_id, row_id, None, None, row_data, "CREATE", org_id, user_id)
+            add_audit_log(conn, session_id, None, None, None, f"{len(rows)} rows", "CREATE", org_id, user_id)
 
         return {"id": session_id}
 
@@ -930,10 +946,10 @@ async def update_row(session_id: int, row_index: int, request: Request):
         return {"success": True}
 
 
-# POST /api/sessions/{session_id}/rows/bulk - updates many rows at once
-# without per-field audit logging (used for bulk operations like the upload
-# corrections workflow or AI/normalization passes, where per-cell audit
-# entries would be noisy)
+# POST /api/sessions/{session_id}/rows/bulk - updates many rows at once, batched via
+# _executemany_batched (see above) rather than one UPDATE per row, and without
+# per-field audit logging (used for bulk operations like the upload corrections
+# workflow or AI/normalization passes, where per-cell audit entries would be noisy)
 @app.post("/api/sessions/{session_id}/rows/bulk")
 async def bulk_update_rows(session_id: int, request: Request):
     org_id = get_org_id(request)
@@ -942,16 +958,18 @@ async def bulk_update_rows(session_id: int, request: Request):
     rows = body.get("rows", [])
 
     with get_db() as conn:
-        for row in rows:
-            # rowIndex from the frontend is 0-based; DB row_index is 1-based
-            target_idx = (row.get("rowIndex") or 0) + 1
+        if rows:
+            # rowIndex from the frontend is 0-based; DB row_index is 1-based.
             # Accept either key: "content" from normal edits, "normalized_json"
             # from the corrections/normalization workflow
-            content = row.get("content") or row.get("normalized_json")
-            conn.execute(
+            _executemany_batched(
+                conn,
                 "UPDATE session_rows SET row_content = ?, updated_at = CURRENT_TIMESTAMP "
                 "WHERE session_id = ? AND row_index = ? AND organisation_id = ?",
-                (json.dumps(content), session_id, target_idx, org_id)
+                [
+                    (json.dumps(row.get("content") or row.get("normalized_json")), session_id, (row.get("rowIndex") or 0) + 1, org_id)
+                    for row in rows
+                ]
             )
         conn.execute(
             "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND organisation_id = ?",

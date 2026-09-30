@@ -223,6 +223,32 @@ Root cause this replaces: Auth0's silent token renewal happens in a hidden ifram
 
 Full diagnosis and fix history in memory note `project_mfa_solution.md`.
 
+### Scalability fix + LWIN bypass + bulk-fix extension + regions DB fix ✅
+Added on its own branch (`feature/scalability-fix`), separate from Session 10.
+
+**Scalability — frontend (`src/App.tsx`):**
+- `processData` converted from synchronous to `async`; validation runs in 300-row chunks with `await yieldToMain()` (`setTimeout(resolve, 0)`) between each chunk so the browser tab stays responsive during large uploads
+- Progress bar overlay added using `motion` + `AnimatePresence`; shows `done / total` rows as each chunk completes
+- Review table paginated: `reviewPage` / `reviewPageSize` state, rows sliced before render, rows-per-page selector, first/prev/next/last buttons, page clamped when filtered set shrinks
+- All ~20 `processData` call sites updated to `await processData(...)` with enclosing functions made `async`
+
+**Scalability — backend (`server.py`):**
+- `_executemany_batched(conn, sql, params_list, batch_size=1000)` helper added — sets `cursor.fast_executemany = True` and inserts in 1,000-row batches
+- `create_session` now uses `_executemany_batched` for row inserts and writes one summary audit log entry per upload (not one per row)
+- `bulk_update_rows` now uses `_executemany_batched`
+
+**LWIN bypass rule (`src/App.tsx`, `src/components/RulesModal.tsx`):**
+- When a row has a valid 7-digit LWIN (`lwin7` stripped to digits, length === 7) and the data type is inventory, client_reserves, sales_orders, or purchase_orders: region/sub-region checks skipped, country reference check short-circuited, vintage INVALID error suppressed, wine name special-char check skipped, type and sub_type validation bypassed (value passed through as-is), sub_type type-compatibility check skipped
+- `type` and `sub_type` added to the post-loop no-LWIN required fields check (alongside producer, country, region)
+- `RulesModal.tsx`: LWIN rule description updated to document bypass; dead imports `CheckCircle2` and `AlertTriangle` removed
+
+**Bulk-fix suggestion extension (`src/App.tsx`):**
+- `bulkFixableFields` extended to include `type`, `sub_type`, `currency`, `warehouse_location`, `tax_status`, `packaging_type`
+
+**Regions DB fix:**
+- Two entries both named `Jura` existed: one with `parent=France` (correct) and one with `parent=German Swiss` (Swiss canton). The frontend's `.find()` could pick either, causing Arbois to resolve to Switzerland instead of France
+- Swiss entry renamed to `Jura (Switzerland)`; existing `Arbois` entry (which had the wrong parent chain) deleted and re-inserted with `parent='France'` directly
+
 ### Session 11 — Auth testing and hardening
 - End-to-end test of full auth flow: create user in Auth0, log in, confirm correct organisation loads
 - Test data isolation: confirm a token from org A cannot retrieve org B's sessions or data

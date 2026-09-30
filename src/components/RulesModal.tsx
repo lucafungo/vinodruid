@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, CheckCircle2, AlertTriangle, Info, ChevronDown, ChevronUp } from 'lucide-react';
+import { X, Info, ChevronDown, ChevronUp } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { WINE_TYPES, WINE_SUBTYPES } from '../utils/wineValidation';
 
@@ -136,20 +136,20 @@ export const RulesModal: React.FC<RulesModalProps> = ({ isOpen, onClose, dataTyp
                   </>
                 ) : (
                   <>
-                    <RuleItem 
-                      title="LWIN (Liv-ex Wine Identification Number)" 
-                      description="Mandatory. If LWIN is not provided, you must provide: Producer, Wine Name, Vintage, Country, and Region."
+                    <RuleItem
+                      title="LWIN (Liv-ex Wine Identification Number)"
+                      description="Mandatory. If LWIN is not provided, you must provide: Producer, Wine Name, Vintage, Country, Region, Type, and Sub-Type. If a valid LWIN is provided, it identifies the wine on its own — Wine Name, Producer, Vintage, Country, Region, Type, and Sub-Type are not individually checked, even if they look wrong."
                       type="critical"
                     />
                     
-                    <RuleItem 
-                      title="Wine Name" 
-                      description="Must not be abbreviated. Accents (like é, ñ, ü) and apostrophes are allowed, but other special characters should be removed."
+                    <RuleItem
+                      title="Wine Name"
+                      description="Must not be abbreviated. Accents (like é, ñ, ü) and apostrophes are allowed, but other special characters should be removed. Not checked if a valid LWIN is provided."
                     />
-                    
-                    <RuleItem 
-                      title="Vintage" 
-                      description="Format: YYYY. Use 'NV' for Non-Vintage or '1' if N/A."
+
+                    <RuleItem
+                      title="Vintage"
+                      description="Format: YYYY. Use 'NV' for Non-Vintage or '1' if N/A. Not checked if a valid LWIN is provided."
                     />
                     
                     <RuleItem 
@@ -174,15 +174,15 @@ export const RulesModal: React.FC<RulesModalProps> = ({ isOpen, onClose, dataTyp
                       type="critical"
                     />
                     
-                    <RuleItem 
-                      title="Type & Sub-Type" 
-                      description="Must match the approved list. Suggestions provided for slight misspellings."
+                    <RuleItem
+                      title="Type & Sub-Type"
+                      description="Must match the approved list. Suggestions provided for slight misspellings. Not checked if a valid LWIN is provided."
                       acceptedValues={{ 'Types': WINE_TYPES, 'Sub-Types': WINE_SUBTYPES }}
                     />
-                    
-                    <RuleItem 
-                      title="Country & Region" 
-                      description="Validated against the master region list. Regions must belong to the specified country."
+
+                    <RuleItem
+                      title="Country & Region"
+                      description="Validated against the master region list. Regions must belong to the specified country. Not checked if a valid LWIN is provided."
                     />
                     
                     <RuleItem 

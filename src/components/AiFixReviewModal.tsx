@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Check, ArrowRight, Sparkles, RefreshCcw, AlertTriangle } from 'lucide-react';
+import { X, Check, Sparkles, RefreshCcw, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // isOpen/onClose control visibility (App.tsx's isAiReviewModalOpen state).
