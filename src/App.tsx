@@ -3,7 +3,7 @@ import { useAuth0 } from '@auth0/auth0-react';
 import ExcelJS from 'exceljs';
 import { normalizeBottleSize, normalizeVintage, normalizeCurrency, normalizeDate, normalizeCountry } from './utils/normalization';
 import { WINE_TYPES, WINE_SUBTYPES, TYPE_TO_SUBTYPE, findClosestMatch } from './utils/wineValidation';
-import { CheckCircle2, AlertCircle, HelpCircle, ArrowRight, Table, Sparkles, RefreshCcw, RotateCcw, RotateCw, Trash2, Download, Upload, Filter, LayoutGrid, Copy, Check, Edit2, X, Calculator, History, Play, Plus } from 'lucide-react';
+import { CheckCircle2, AlertCircle, HelpCircle, ArrowRight, Sparkles, RefreshCcw, RotateCcw, RotateCw, Trash2, Download, Upload, Filter, LayoutGrid, Copy, Check, Edit2, X, Calculator, Play, Plus } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { FileUploader } from './components/FileUploader';
 import { SchemaMapper } from './components/SchemaMapper';
@@ -1035,6 +1035,50 @@ export default function App() {
   };
 
   // Bundles every completed data type's rows into one CSV-per-type, zipped, and downloads it (uses SCHEMAS to build each CSV's columns).
+  // Shared CSV-building helper used by every export function below. Escapes each field's value
+  // (handles currency objects, quotes/commas/newlines) and joins into a header row + data rows.
+  // extraColumns lets a caller append already-formatted columns after the schema's own fields
+  // (used by handleExportErrors for its "Errors to Fix" and "__row_id__" columns).
+  const rowsToCsv = (
+    schema: { fields: { key: string; label: string }[] },
+    rows: any[],
+    extraColumns?: { label: string; value: (row: any) => string }[]
+  ): string => {
+    const escapeCsvValue = (raw: any): string => {
+      let val = raw;
+      if (typeof val === 'object' && val?.value !== undefined) val = `${val.currency} ${val.value}`;
+      const stringVal = String(val ?? '');
+      return (stringVal.includes(',') || stringVal.includes('"') || stringVal.includes('\n'))
+        ? `"${stringVal.replace(/"/g, '""')}"`
+        : stringVal;
+    };
+    const headers = [...schema.fields.map(f => f.label), ...(extraColumns?.map(c => c.label) ?? [])].join(',');
+    const dataRows = rows.map(row => [
+      ...schema.fields.map(field => escapeCsvValue(row[field.key])),
+      ...(extraColumns?.map(c => c.value(row)) ?? []),
+    ].join(','));
+    return [headers, ...dataRows].join('\n');
+  };
+
+  // Shared download trigger used by every export function below: wraps a Blob in a temporary,
+  // invisible anchor element, clicks it, then cleans up.
+  const downloadBlob = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // Same as downloadBlob, for CSV text content specifically.
+  const downloadCsv = (csvContent: string, filename: string) => {
+    downloadBlob(new Blob([csvContent], { type: 'text/csv;charset=utf-8;' }), filename);
+  };
+
   const handleDownloadAllCompleted = async () => {
     const JSZip = (await import('jszip')).default;
     const zip = new JSZip();
@@ -1042,30 +1086,13 @@ export default function App() {
     Object.keys(completedTasks).forEach((type) => {
       const task = completedTasks[type];
       const schema = SCHEMAS[type as DataType];
-      const headers = schema.fields.map(f => f.label).join(',');
-      const rows = task.data.map(row =>
-        schema.fields.map(field => {
-          let val = row[field.key];
-          if (typeof val === 'object' && val?.value !== undefined) val = `${val.currency} ${val.value}`;
-          const s = String(val || '');
-          return (s.includes(',') || s.includes('"') || s.includes('\n')) ? `"${s.replace(/"/g, '""')}"` : s;
-        }).join(',')
-      );
-      const csv = [headers, ...rows].join('\n');
+      const csv = rowsToCsv(schema, task.data);
       const safeName = `${type}_${(task.fileName.split('.')[0] || type)}.csv`;
       zip.file(safeName, csv);
     });
 
     const blob = await zip.generateAsync({ type: 'blob' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'vinoclean_completed_exports.zip';
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    downloadBlob(blob, 'vinoclean_completed_exports.zip');
   };
 
   // Downloads a single completed data type's rows as one CSV (single-type version of handleDownloadAllCompleted above).
@@ -1074,32 +1101,7 @@ export default function App() {
     if (!task) return;
 
     const currentSchema = SCHEMAS[type as DataType];
-    const csvHeaders = currentSchema.fields.map(f => f.label).join(',');
-    
-    const rows = task.data.map(row => {
-      return currentSchema.fields.map(field => {
-        let val = row[field.key];
-        if (typeof val === 'object' && val?.value !== undefined) {
-          val = `${val.currency} ${val.value}`;
-        }
-        const stringVal = String(val || '');
-        if (stringVal.includes(',') || stringVal.includes('"') || stringVal.includes('\n')) {
-          return `"${stringVal.replace(/"/g, '""')}"`;
-        }
-        return stringVal;
-      }).join(',');
-    });
-    
-    const csvContent = [csvHeaders, ...rows].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `completed_${task.fileName.split('.')[0] || 'data'}.csv`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    downloadCsv(rowsToCsv(currentSchema, task.data), `completed_${task.fileName.split('.')[0] || 'data'}.csv`);
     setOpenCompletedDropdown(null);
   };
 
@@ -1136,38 +1138,10 @@ export default function App() {
    */
   const handleExport = () => {
     if (processedData.length === 0) return;
-    
+
     const currentSchema = getCurrentSchema();
-    const csvHeaders = currentSchema.fields.map(f => f.label).join(',');
-    
-    const rows = processedData
-      .filter(r => r.status !== 'red') // Only export valid or reviewable rows
-      .map(row => {
-        return currentSchema.fields.map(field => {
-          let val = row[field.key];
-          // Handle currency objects
-          if (typeof val === 'object' && val?.value !== undefined) {
-            val = `${val.currency} ${val.value}`;
-          }
-          // Escape quotes and wrap in quotes if contains comma
-          const stringVal = String(val || '');
-          if (stringVal.includes(',') || stringVal.includes('"') || stringVal.includes('\n')) {
-            return `"${stringVal.replace(/"/g, '""')}"`;
-          }
-          return stringVal;
-        }).join(',');
-      });
-    
-    const csvContent = [csvHeaders, ...rows].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `clean_${fileName.split('.')[0] || 'data'}.csv`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const rows = processedData.filter(r => r.status !== 'red'); // Only export valid or reviewable rows
+    downloadCsv(rowsToCsv(currentSchema, rows), `clean_${fileName.split('.')[0] || 'data'}.csv`);
 
     // Mark session as completed
     if (currentSessionId) {
@@ -1187,36 +1161,11 @@ export default function App() {
     if (errorRows.length === 0) return;
 
     const currentSchema = getCurrentSchema();
-    const csvHeaders = [...currentSchema.fields.map(f => f.label), 'Errors to Fix', '__row_id__'].join(',');
-
-    const rows = errorRows.map(row => {
-      const fields = currentSchema.fields.map(field => {
-        let val = row[field.key];
-        if (typeof val === 'object' && val?.value !== undefined) {
-          val = `${val.currency} ${val.value}`;
-        }
-        const stringVal = String(val || '');
-        if (stringVal.includes(',') || stringVal.includes('"') || stringVal.includes('\n')) {
-          return `"${stringVal.replace(/"/g, '""')}"`;
-        }
-        return stringVal;
-      });
-      const errorsVal = row.errors?.join('; ') || '';
-      fields.push(`"${errorsVal.replace(/"/g, '""')}"`);
-      fields.push(String(row.id));
-      return fields.join(',');
-    });
-
-    const csvContent = [csvHeaders, ...rows].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `errors_${fileName.split('.')[0] || 'data'}.csv`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const csvContent = rowsToCsv(currentSchema, errorRows, [
+      { label: 'Errors to Fix', value: row => `"${(row.errors?.join('; ') || '').replace(/"/g, '""')}"` },
+      { label: '__row_id__', value: row => String(row.id) },
+    ]);
+    downloadCsv(csvContent, `errors_${fileName.split('.')[0] || 'data'}.csv`);
   };
 
   // Minimal CSV line parser (handles quoted fields and escaped quotes) used by handleUploadCorrections() below.

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, CheckCircle2, AlertTriangle, Info, ChevronDown, ChevronUp } from 'lucide-react';
+import { X, Info, ChevronDown, ChevronUp } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { WINE_TYPES, WINE_SUBTYPES } from '../utils/wineValidation';
 
