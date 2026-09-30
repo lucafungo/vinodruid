@@ -477,8 +477,19 @@ export default function App() {
   // authFetch wraps the browser's fetch() so every API call in this file (session save/load, master
   // data lookups, AI fix calls, etc.) automatically gets an Auth0 bearer token attached. Use this instead
   // of plain fetch() anywhere the backend requires authentication.
+  //
+  // Refresh token rotation invalidates the previous token on every use. Without de-duplication, the
+  // several authFetch calls that fire in parallel on load would race to use the same cached refresh
+  // token, and all but the first would fail with "Missing Refresh Token".
+  const tokenPromiseRef = useRef<Promise<string> | null>(null);
+
   const authFetch = useCallback(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const token = await getAccessTokenSilently();
+    if (!tokenPromiseRef.current) {
+      tokenPromiseRef.current = getAccessTokenSilently().finally(() => {
+        tokenPromiseRef.current = null;
+      });
+    }
+    const token = await tokenPromiseRef.current;
     return fetch(input, {
       ...init,
       headers: { ...init?.headers, Authorization: `Bearer ${token}` },
@@ -556,6 +567,10 @@ export default function App() {
   // data (known cellar names, known client names, region reference data) used for autocomplete and validation
   // throughout the review step, plus the saved-sessions list (loadSessions, defined further below).
   useEffect(() => {
+    // Wait for a real, completed Auth0 login before calling authFetch — otherwise this fires
+    // immediately on mount (authFetch's identity doesn't change) before the redirect-based
+    // login + MFA flow has finished, fails once, and — since nothing re-triggers it — never retries.
+    if (!isAuthenticated) return;
     authFetch('/api/master/cellars')
       .then(r => r.json())
       .then(data => setMasterCellars(data))
@@ -569,7 +584,7 @@ export default function App() {
       .then(data => setRegionRefData(data))
       .catch(e => console.error("Failed to load regions", e));
     loadSessions();
-  }, [authFetch]);
+  }, [authFetch, isAuthenticated]);
 
   // Runs whenever `step` changes: whenever the user lands back on the upload screen, refresh the
   // saved-sessions list so the "resume a session" list (rendered in the upload step JSX below) is current.
@@ -906,10 +921,12 @@ export default function App() {
   } | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  // Runs once authFetch is ready: fetches identity from backend (/api/me) — validates org + user,
-  // populates currentUser (used for admin access checks), and re-keys the completedTasks localStorage
-  // cache if the resolved organisation id differs from what was cached.
+  // Runs once a real Auth0 login has completed: fetches identity from backend (/api/me) — validates
+  // org + user, populates currentUser (used for admin access checks), and re-keys the completedTasks
+  // localStorage cache if the resolved organisation id differs from what was cached.
+  // See the isAuthenticated gate note on the master-data effect above — same reasoning applies here.
   useEffect(() => {
+    if (!isAuthenticated) return;
     authFetch('/api/me')
       .then(r => r.json().then(d => ({ ok: r.ok, data: d })))
       .then(({ ok, data }) => {
@@ -928,7 +945,7 @@ export default function App() {
         }
       })
       .catch(err => console.error('[/api/me]', err));
-  }, [authFetch]);
+  }, [authFetch, isAuthenticated]);
 
   // Runs whenever the "completed tasks" dropdown opens/closes: closes it on any click outside its button.
   useEffect(() => {
