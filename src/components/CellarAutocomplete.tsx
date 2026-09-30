@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ChevronDown, Check } from 'lucide-react';
 
+// value/onChange are the current cell text and its setter; suggestions is the list of known cellar names to
+// match against (App.tsx passes masterCellars). onBlur commits the value when the field loses focus/closes,
+// onKeyDown is forwarded for keys this component doesn't itself handle (so the parent grid's navigation still works).
 interface CellarAutocompleteProps {
   value: string;
   suggestions: string[];
@@ -9,6 +12,8 @@ interface CellarAutocompleteProps {
   onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
 }
 
+// Text input with a dropdown of matching cellar names, used as the editable cell for the "cellar_name" column
+// in App.tsx's review-step data grid — lets the user pick an existing master cellar rather than free-typing one.
 export const CellarAutocomplete: React.FC<CellarAutocompleteProps> = ({
   value,
   suggestions,
@@ -22,9 +27,10 @@ export const CellarAutocomplete: React.FC<CellarAutocompleteProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Recompute the filtered dropdown list whenever the typed value or the suggestion pool changes.
   useEffect(() => {
     if (isOpen) {
-      const filtered = suggestions.filter(s => 
+      const filtered = suggestions.filter(s =>
         s.toLowerCase().includes(value.toLowerCase())
       );
       setFilteredSuggestions(filtered);
@@ -32,6 +38,7 @@ export const CellarAutocomplete: React.FC<CellarAutocompleteProps> = ({
     }
   }, [value, suggestions, isOpen]);
 
+  // Closing the dropdown by clicking elsewhere also commits the current value via onBlur.
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
@@ -43,6 +50,8 @@ export const CellarAutocomplete: React.FC<CellarAutocompleteProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [value, onBlur]);
 
+  // Arrow keys move the highlight, Enter picks the highlighted suggestion (or falls through to onKeyDown if
+  // nothing is highlighted), Escape closes the dropdown; anything else is passed through to onKeyDown.
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();

@@ -1,5 +1,7 @@
 import { useAuth0 } from '@auth0/auth0-react';
 
+// Simple pre-login screen shown by App.tsx whenever the user isn't authenticated (isAuthenticated is false).
+// It has no props — clicking "Sign in" just kicks off the Auth0 hosted-login redirect flow set up in main.tsx.
 export default function LoginPage() {
   const { loginWithRedirect } = useAuth0();
 

@@ -2,6 +2,12 @@ import React, { useState } from 'react';
 import { X, Check, Trash2, AlertCircle, Edit2 } from 'lucide-react';
 import { motion } from 'motion/react';
 
+// row1/row2 are the two processedData rows being compared (App.tsx finds them by id).
+// fields is the schema's field list (labels to display). onKeep(id) marks one row as the accepted one
+// (App.tsx's handleIgnoreDuplicate / handleIgnorePriceWarning), onRemove(id) deletes a row (handleDeleteRow).
+// onEdit lets the user fix a value inline without leaving the comparison (handleRowUpdate). type switches
+// between "duplicate row" wording/logic and "price outlier" wording/logic. queueInfo, when set, means this
+// modal is part of a review queue (App.tsx steps through several comparisons in a row) and shows how many remain.
 interface DuplicateComparisonModalProps {
   row1: any;
   row2: any;
@@ -14,6 +20,9 @@ interface DuplicateComparisonModalProps {
   queueInfo?: { remaining: number };
 }
 
+// Side-by-side comparison modal for two rows App.tsx flagged as likely duplicates (or, in "price" mode, a row
+// whose price looks like an outlier vs. a reference). Rendered by App.tsx when comparingDuplicate is set, during
+// the review step. Lets the user keep one/both rows, remove one, or edit values directly in the comparison.
 export const DuplicateComparisonModal: React.FC<DuplicateComparisonModalProps> = ({
   row1,
   row2,
@@ -29,6 +38,7 @@ export const DuplicateComparisonModal: React.FC<DuplicateComparisonModalProps> =
   const inQueue = !!queueInfo;
   const [editingCell, setEditingCell] = useState<{ rowId: number; fieldKey: string; value: string } | null>(null);
 
+  // Begins inline editing of a single cell (only active when the parent passed an onEdit handler).
   const startEdit = (rowId: number, fieldKey: string, currentValue: any) => {
     if (!onEdit) return;
     setEditingCell({ rowId, fieldKey, value: currentValue === undefined || currentValue === null ? '' : String(currentValue) });
@@ -45,6 +55,9 @@ export const DuplicateComparisonModal: React.FC<DuplicateComparisonModalProps> =
     if (e.key === 'Escape') setEditingCell(null);
   };
 
+  // Renders one field's value cell for a row — either the editable input (if this cell is being edited) or
+  // a display span that highlights when the two rows' values differ (isDifferent) and, in price mode,
+  // emphasizes the price-specific field even more (isPriceField).
   const renderCell = (row: any, fieldKey: string, isDifferent: boolean, isPriceField: boolean) => {
     const rawVal = row[fieldKey];
     const isCurrentlyEditing = editingCell?.rowId === row.id && editingCell?.fieldKey === fieldKey;

@@ -2,11 +2,14 @@ import React, { useState } from 'react';
 import { X, MapPin } from 'lucide-react';
 import { motion } from 'motion/react';
 
+// onSave receives the completed form values (used by App.tsx's handleAddLocation to add a new cellar/location
+// to the master list); onClose just dismisses the modal without saving.
 interface AddLocationModalProps {
   onSave: (data: Record<string, string>) => void;
   onClose: () => void;
 }
 
+// Default/blank values for every field in the form, keyed the same way the backend cellar record is.
 const EMPTY_FORM: Record<string, string> = {
   cellar_name: '',
   location_type: '',
@@ -30,6 +33,7 @@ const EMPTY_FORM: Record<string, string> = {
   tax_status: 'IB',
 };
 
+// Field keys that must be non-empty before the form can be submitted.
 const REQUIRED = [
   'cellar_name', 'location_type', 'cellar_code',
   'address_line_1', 'city', 'country',
@@ -37,12 +41,16 @@ const REQUIRED = [
   'currency', 'create_as_customer_cellar', 'tax_status',
 ];
 
+// Modal dialog for manually adding a new cellar/location (with its main contact) to the master cellar list.
+// Rendered by App.tsx when showAddLocationModal is true (triggered from the "Add Location" action, e.g. when
+// a row references a cellar name that isn't in the master list yet).
 export const AddLocationModal: React.FC<AddLocationModalProps> = ({ onSave, onClose }) => {
   const [form, setForm] = useState<Record<string, string>>(EMPTY_FORM);
   const [errors, setErrors] = useState<string[]>([]);
 
   const set = (key: string, value: string) => setForm(prev => ({ ...prev, [key]: value }));
 
+  // Validates required fields locally before calling onSave; blocks submit and highlights missing fields otherwise.
   const handleSubmit = () => {
     const missing = REQUIRED.filter(k => !form[k]?.trim());
     if (missing.length > 0) {
@@ -53,6 +61,7 @@ export const AddLocationModal: React.FC<AddLocationModalProps> = ({ onSave, onCl
     onSave(form);
   };
 
+  // Renders a labelled text input bound to form[key]; half=true makes it span one grid column instead of two.
   const field = (key: string, label: string, required: boolean, half = false) => {
     const isErr = errors.includes(key);
     return (
@@ -74,6 +83,7 @@ export const AddLocationModal: React.FC<AddLocationModalProps> = ({ onSave, onCl
     );
   };
 
+  // Same as field(), but renders a <select> dropdown instead of a free-text input.
   const selectField = (key: string, label: string, options: { value: string; label: string }[], required: boolean) => {
     const isErr = errors.includes(key);
     return (

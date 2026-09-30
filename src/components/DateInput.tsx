@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Calendar, ChevronLeft, ChevronRight } from 'lucide-react';
 import { normalizeDate } from '../utils/normalization';
 
+// value/onChange work like a normal controlled text input — value is expected/produced in dd/mm/yyyy display
+// format. Used by RowEditor.tsx for any field that looks like a date (see isDateField there).
 interface DateInputProps {
   value: string;
   onChange: (value: string) => void;
@@ -15,6 +17,8 @@ const MONTHS = [
 ];
 const DAYS = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
 
+// Parses a dd/mm/yyyy display string back into a Date, returning null if it isn't in that exact format
+// or isn't a real calendar date (e.g. 31/02/2025).
 function parseDisplay(str: string): Date | null {
   if (!str) return null;
   const m = str.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
@@ -24,12 +28,16 @@ function parseDisplay(str: string): Date | null {
   return date.getFullYear() === y && date.getMonth() === mo && date.getDate() === d ? date : null;
 }
 
+// Formats a Date back into the dd/mm/yyyy display string.
 function toDisplay(date: Date): string {
   const d = String(date.getDate()).padStart(2, '0');
   const m = String(date.getMonth() + 1).padStart(2, '0');
   return `${d}/${m}/${date.getFullYear()}`;
 }
 
+// Free-text date field with a calendar picker button. Typed text is normalized to dd/mm/yyyy on blur using
+// normalizeDate() from utils/normalization.ts, so users can type loosely-formatted dates and still get a
+// consistent value back through onChange.
 export const DateInput: React.FC<DateInputProps> = ({ value, onChange, placeholder, className }) => {
   const [text, setText] = useState(value || '');
   const [showPicker, setShowPicker] = useState(false);
@@ -54,12 +62,16 @@ export const DateInput: React.FC<DateInputProps> = ({ value, onChange, placehold
     return () => document.removeEventListener('mousedown', handler);
   }, [showPicker]);
 
+  // On blur, run whatever the user typed through normalizeDate() and, if it's parseable, replace the
+  // text with the standardized dd/mm/yyyy form and propagate it via onChange. Unparseable text is left
+  // as-is (see isInvalid below) so the user can see and fix their input rather than losing it silently.
   const handleBlur = () => {
     if (!text.trim()) { onChange(''); return; }
     const normalized = normalizeDate(text);
     if (normalized) { setText(normalized); onChange(normalized); }
   };
 
+  // Opens/toggles the calendar dropdown, seeding it to the currently-entered date (or today if none/invalid).
   const openPicker = () => {
     const parsed = parseDisplay(text) ?? new Date();
     setCalYear(parsed.getFullYear());
@@ -76,6 +88,7 @@ export const DateInput: React.FC<DateInputProps> = ({ value, onChange, placehold
     else setCalMonth(m => m + 1);
   };
 
+  // User clicked a day in the calendar grid — format it and commit immediately (no blur needed).
   const selectDay = (day: number) => {
     const date = new Date(calYear, calMonth, day);
     const formatted = toDisplay(date);
@@ -97,7 +110,9 @@ export const DateInput: React.FC<DateInputProps> = ({ value, onChange, placehold
   const today = new Date();
   const selected = parseDisplay(text);
 
-  // Live preview while typing (only show when text isn't already normalized)
+  // Live preview while typing (only show when text isn't already normalized).
+  // preview shows what normalizeDate() would turn the text into; isInvalid flags text that
+  // normalizeDate() can't parse at all, so the user gets feedback before they even blur the field.
   const isAlreadyNormalized = /^\d{2}\/\d{2}\/\d{4}$/.test(text);
   const preview = text && !isAlreadyNormalized ? normalizeDate(text) : null;
   const isInvalid = text && !isAlreadyNormalized && !preview;

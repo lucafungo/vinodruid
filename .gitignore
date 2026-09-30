@@ -32,3 +32,4 @@ Thumbs.db
 
 # Claude Code — local tooling, not part of the project
 .claude/
+.playwright-mcp/

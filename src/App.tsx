@@ -37,6 +37,10 @@ type Step = 'upload' | 'map' | 'review' | 'manual';
  * Schema definition for each data type.
  * Defines the expected fields and their default required status.
  * Note: 'inventory' schema is dynamic and adjusted at runtime based on user input.
+ * This is the master field list: it drives the column-mapping UI (SchemaMapper, step === 'map'),
+ * the manual entry grid's column picker, and the validation rules used by processData() below.
+ * Each data type (inventory, contacts, sales_orders, ...) has its own field list; most share the
+ * same shape (address/payment-terms fields) so only the less obvious ones are called out below.
  */
 const SCHEMAS: Record<DataType, { label: string, fields: { key: string, label: string, required: boolean, options?: string[], hint?: string, noAutoCalc?: boolean }[] }> = {
   inventory: {
@@ -463,10 +467,16 @@ interface ProcessedRow {
   fieldErrors: string[]; // Track which fields have errors for UI highlighting
   [key: string]: any; // Normalized field values
 }
+// ProcessedRow is the shape of every row once it comes out of processData() further below;
+// the review-step table (step === 'review') and the export/upload-corrections handlers all read these fields.
 
 export default function App() {
+  // Auth0 hook: gives us login state plus a function to fetch a fresh access token.
   const { getAccessTokenSilently, isAuthenticated, logout, isLoading: authLoading } = useAuth0();
 
+  // authFetch wraps the browser's fetch() so every API call in this file (session save/load, master
+  // data lookups, AI fix calls, etc.) automatically gets an Auth0 bearer token attached. Use this instead
+  // of plain fetch() anywhere the backend requires authentication.
   const authFetch = useCallback(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const token = await getAccessTokenSilently();
     return fetch(input, {
@@ -481,11 +491,11 @@ export default function App() {
   const [step, setStep] = useState<Step>('upload');
   const [dataType, setDataType] = useState<DataType>('inventory');
 
-  // Manual entry
+  // Manual entry: controls the "choose which columns to fill in" modal used by the manual entry grid (step === 'manual', ManualEntryGrid component further below)
   const [showColumnPicker, setShowColumnPicker] = useState(false);
   const [pickerSelectedKeys, setPickerSelectedKeys] = useState<Set<string>>(new Set());
 
-  // Column swap
+  // Column swap: tracks a two-click "pick source column, then pick target column" flow used by handleSwapColumns() below, in the review step's table header
   const [swapSourceKey, setSwapSourceKey] = useState<string | null>(null);
   const [swapPickingTarget, setSwapPickingTarget] = useState(false);
 
@@ -542,6 +552,9 @@ export default function App() {
   const [masterClients, setMasterClients] = useState<string[]>([]);
   const [showAddLocationModal, setShowAddLocationModal] = useState(false);
 
+  // Runs once on mount (authFetch identity only changes if the Auth0 token getter changes): loads reference/master
+  // data (known cellar names, known client names, region reference data) used for autocomplete and validation
+  // throughout the review step, plus the saved-sessions list (loadSessions, defined further below).
   useEffect(() => {
     authFetch('/api/master/cellars')
       .then(r => r.json())
@@ -558,6 +571,8 @@ export default function App() {
     loadSessions();
   }, [authFetch]);
 
+  // Runs whenever `step` changes: whenever the user lands back on the upload screen, refresh the
+  // saved-sessions list so the "resume a session" list (rendered in the upload step JSX below) is current.
   useEffect(() => {
     if (step === 'upload') {
       loadSessions();
@@ -566,7 +581,9 @@ export default function App() {
     }
   }, [step]);
 
-  // Auto-sync session state
+  // Auto-sync session state: whenever the session id or any of the tracked wizard state below changes
+  // (and we're past the upload step), debounce 2s then PATCH the current progress to the backend so the
+  // user can resume later via handleLoadSession(). This is what makes "Save & resume" work automatically.
   useEffect(() => {
     if (currentSessionId && step !== 'upload') {
       const updateSession = async () => {
@@ -598,6 +615,7 @@ export default function App() {
     }
   }, [currentSessionId, step, mapping, fileName, dataType, autoFixedMap, manualEditsMap, calculationLogsMap, ignoredDuplicates, ignoredPriceWarnings]);
 
+  // Fetches the list of saved sessions from the backend for the "resume a session" list in the upload step.
   const loadSessions = async () => {
     setIsLoadingSessions(true);
     try {
@@ -613,6 +631,9 @@ export default function App() {
     }
   };
 
+  // Resumes a previously saved session: fetches its stored rows/mapping/step from the backend and
+  // restores all the local state (autoFixedMap, manualEditsMap, ignored warnings, etc.) so the user
+  // lands back exactly where they left off.
   const handleLoadSession = async (sessionId: number) => {
     setIsAiProcessing(true); // Re-use for loading state
     console.log('[Resume] Loading session:', sessionId);
@@ -715,6 +736,7 @@ export default function App() {
     }
   };
 
+  // Permanently deletes a saved session on the backend (after a confirm dialog) and refreshes the list.
   const handleDeleteSession = async (sessionId: number, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     
@@ -737,6 +759,9 @@ export default function App() {
     }
   };
 
+  // After a successful import, remembers new cellar names / client account codes so they appear as
+  // known values (autocomplete + duplicate detection) next time. Updates masterCellars/masterClients state
+  // (loaded on mount above) and persists them to the backend.
   const handleSaveMasterData = () => {
     if (dataType === 'cellars') {
       const validCellarNames = processedData
@@ -765,6 +790,7 @@ export default function App() {
     }
   };
 
+  // Wipes the stored master cellar/client list, both locally and on the backend (used from the admin panel).
   const handleClearMasterData = (type: string) => {
     if (type === 'cellars') {
       setMasterCellars([]);
@@ -777,6 +803,7 @@ export default function App() {
     }
   };
   
+  // Adds a brand-new cellar name from the AddLocationModal (rendered near the bottom of this file) to the master list.
   const handleAddLocation = (data: Record<string, string>) => {
     const cellarName = data.cellar_name?.trim();
     if (!cellarName) return;
@@ -804,6 +831,8 @@ export default function App() {
 
   /**
    * Applies the proposed bulk fix to all matching rows.
+   * Triggered from the review step's "apply to all similar rows" prompt (pendingBulkAction state above);
+   * re-runs processData() afterward so validation/status reflect the change, same as any other edit.
    */
   const applyBulkFix = () => {
     if (!pendingBulkAction) return;
@@ -840,7 +869,9 @@ export default function App() {
     }
   };
 
-  // Completed Tasks state — org-scoped, loaded synchronously from localStorage cache
+  // Completed Tasks state — org-scoped, loaded synchronously from localStorage cache.
+  // Tracks, per data type, the last import marked "done" (used to show a "completed" badge/summary
+  // on the upload step and let the user re-download past exports without redoing the wizard).
   const [orgId, setOrgId] = useState<number>(() =>
     parseInt(localStorage.getItem('_vd_org_id') ?? '1', 10)
   );
@@ -861,8 +892,10 @@ export default function App() {
   });
   const [openCompletedDropdown, setOpenCompletedDropdown] = useState<DataType | null>(null);
 
-  const [showAdmin, setShowAdmin] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false); // toggles rendering the AdminPanel component instead of the wizard
 
+  // Logged-in user identity (from the backend, not just Auth0) — org id, display name, access level.
+  // user_access drives whether the "Admin" entry point is shown in the header UI further below.
   const [currentUser, setCurrentUser] = useState<{
     user_id: number;
     display_name: string;
@@ -873,7 +906,9 @@ export default function App() {
   } | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  // Fetch identity from backend — validates org + user and updates org-scoped storage key
+  // Runs once authFetch is ready: fetches identity from backend (/api/me) — validates org + user,
+  // populates currentUser (used for admin access checks), and re-keys the completedTasks localStorage
+  // cache if the resolved organisation id differs from what was cached.
   useEffect(() => {
     authFetch('/api/me')
       .then(r => r.json().then(d => ({ ok: r.ok, data: d })))
@@ -895,6 +930,7 @@ export default function App() {
       .catch(err => console.error('[/api/me]', err));
   }, [authFetch]);
 
+  // Runs whenever the "completed tasks" dropdown opens/closes: closes it on any click outside its button.
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (openCompletedDropdown) {
@@ -908,6 +944,8 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [openCompletedDropdown]);
 
+  // Marks the current import as finished: only allowed once every row is green (no errors), saves
+  // master data (cellars/clients) and records the result in completedTasks (persisted to localStorage below).
   const handleMarkAsComplete = async () => {
     // Only allow if all rows are green
     const allReady = processedData.every(r => r.status === 'green');
@@ -950,6 +988,7 @@ export default function App() {
     setCurrentSessionId(null);
   };
 
+  // Removes a data type's "completed" badge/record from the completedTasks map and localStorage.
   const handleClearCompletedTask = (type: string) => {
     const newCompleted = { ...completedTasks };
     delete newCompleted[type];
@@ -958,6 +997,8 @@ export default function App() {
     setOpenCompletedDropdown(null);
   };
 
+  // Un-marks a completed session as "in_progress" on the backend, clears its completed badge, then
+  // calls handleLoadSession() above to bring the wizard back to where that session left off.
   const handleReopenSession = async (sessionId: number, type: DataType) => {
     try {
       await authFetch(`/api/sessions/${sessionId}`, {
@@ -976,6 +1017,7 @@ export default function App() {
     await handleLoadSession(sessionId);
   };
 
+  // Bundles every completed data type's rows into one CSV-per-type, zipped, and downloads it (uses SCHEMAS to build each CSV's columns).
   const handleDownloadAllCompleted = async () => {
     const JSZip = (await import('jszip')).default;
     const zip = new JSZip();
@@ -1009,6 +1051,7 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  // Downloads a single completed data type's rows as one CSV (single-type version of handleDownloadAllCompleted above).
   const handleExportCompleted = (type: string) => {
     const task = completedTasks[type];
     if (!task) return;
@@ -1044,6 +1087,9 @@ export default function App() {
   };
 
   // --- Handlers ---
+  // Everything below is the wizard's business logic: export, corrections upload, file parsing/validation
+  // (processData), column mapping, manual entry, and the AI-fix flow. The JSX render tree near the end of
+  // this file wires its buttons/inputs up to these functions.
 
   useEffect(() => {
     // Auto-fix disabled as per user feedback "ai is messing up the file"
@@ -1053,6 +1099,8 @@ export default function App() {
   /**
    * Dynamically determines the active schema based on user input.
    * For 'inventory', it adjusts required fields based on whether the user has LWINs.
+   * Used by the mapping step (SchemaMapper), export, and error-export/correction functions below,
+   * instead of reading SCHEMAS[dataType] directly, so lwin7's required-ness stays consistent everywhere.
    */
   const getCurrentSchema = () => {
     const base = SCHEMAS[dataType];
@@ -1114,6 +1162,9 @@ export default function App() {
     }
   };
 
+  // Exports only the invalid ("red") rows to CSV, with an extra "Errors to Fix" column and a hidden
+  // __row_id__ column. This file is meant to be edited outside the app and re-imported via
+  // handleUploadCorrections() below, which matches rows back up using that __row_id__ column.
   const handleExportErrors = () => {
     const errorRows = processedData.filter(r => r.status === 'red');
     if (errorRows.length === 0) return;
@@ -1151,6 +1202,7 @@ export default function App() {
     document.body.removeChild(link);
   };
 
+  // Minimal CSV line parser (handles quoted fields and escaped quotes) used by handleUploadCorrections() below.
   const parseCSVLine = (line: string): string[] => {
     const result: string[] = [];
     let current = '';
@@ -1171,6 +1223,10 @@ export default function App() {
     return result;
   };
 
+  // Re-imports a corrected CSV (the one produced by handleExportErrors above, or a similar hand-edited
+  // file). Rows are matched back to the original rawData by the hidden __row_id__ column when present
+  // (so edits land on the exact same row even if it was re-ordered); each corrected column is looked up
+  // by its schema label and mapped back to its internal field key before being merged into rawData.
   const handleUploadCorrections = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1243,10 +1299,10 @@ export default function App() {
   };
 
   /**
-   * Handles the initial file upload.
-   * Parses the file, sets raw data, and determines the next step.
-   * - If Inventory: Go to LWIN check.
-   * - Others: Go directly to Mapping.
+   * Handles the initial file upload (called by FileUploader in the upload-step JSX below once it has
+   * parsed the chosen file into rows). Validates prerequisite master data exists, stores the raw rows,
+   * runs an initial (unmapped) processData() pass, creates a backend session, and advances to the map step.
+   * Note: despite the old comment below, there's no separate LWIN-check step anymore — everything goes to 'map'.
    */
   const handleUpload = (data: any[], fields: string[], name: string) => {
     setValidationError(null);
@@ -1299,6 +1355,11 @@ export default function App() {
     setStep(initialStep);
   };
 
+  // Swaps the data behind two schema columns. Triggered by clicking a target column after a source
+  // column was picked (swapSourceKey/swapPickingTarget state above, set from the review table header).
+  // Two cases: for a file upload, columns still point at original CSV headers via `mapping`, so we just
+  // swap the mapping entries; for manual entry there's no mapping (values live directly under the schema
+  // keys in rawData), so we swap the values in each row instead. Either way processData() re-runs after.
   const handleSwapColumns = (targetKey: string) => {
     if (!swapSourceKey || swapSourceKey === targetKey) {
       setSwapSourceKey(null);
@@ -1334,6 +1395,8 @@ export default function App() {
     setSwapPickingTarget(false);
   };
 
+  // Opens the column picker modal (showColumnPicker state above) before manual entry starts, pre-selecting
+  // required fields plus whichever optional columns the user picked last time (remembered in localStorage per data type).
   const handleOpenManualEntry = () => {
     const schema = getCurrentSchema();
     const requiredKeys = new Set(schema.fields.filter(f => f.required).map(f => f.key));
@@ -1354,6 +1417,7 @@ export default function App() {
     setShowColumnPicker(true);
   };
 
+  // Confirms the column picker selection, remembers the optional columns chosen for next time, and switches to step === 'manual' (ManualEntryGrid).
   const handleStartManualEntry = () => {
     const schema = getCurrentSchema();
     const requiredKeys = new Set(schema.fields.filter(f => f.required).map(f => f.key));
@@ -1365,6 +1429,9 @@ export default function App() {
     setStep('manual');
   };
 
+  // Called by ManualEntryGrid when the user finishes typing rows by hand: stores them as rawData with an
+  // empty mapping (manual rows already use schema keys directly), runs processData(), creates a backend
+  // session, and jumps straight to the review step.
   const handleManualSubmit = (rows: Record<string, string>[]) => {
     const dataWithIds = rows.map((r, i) => ({ ...r, id: i }));
     setRawData(dataWithIds);
@@ -1398,10 +1465,9 @@ export default function App() {
     setStep('review');
   };
 
-  /**
-   * Triggered when the user finishes mapping columns.
-   * Applies the mapping and runs the initial data processing.
-   */
+  // Creates a brand-new backend session record for the current processed data + mapping (used the first
+  // time a session is persisted; later updates go through the PATCH calls in handleMappingComplete/the
+  // auto-sync useEffect above). Called from handleMappingComplete below when there's no currentSessionId yet.
   const handleSaveSession = async (processed: ProcessedRow[], currentMapping: Record<string, string>) => {
     try {
       // Prepare the payload to match server.ts expectations
@@ -1440,6 +1506,10 @@ export default function App() {
     }
   };
 
+  // Triggered when the user finishes mapping columns (SchemaMapper's "Continue" in the map step JSX below).
+  // Applies the mapping, decides whether enough fields are mapped to auto-calculate quantities/prices
+  // (handleCalculationSmartFix below) or just runs a normal processData() pass, then saves/syncs the
+  // session and the caller (map step JSX) advances `step` to 'review'.
   const handleMappingComplete = async (newMapping: Record<string, string>) => {
     setMapping(newMapping);
     setHasAutoFixed(false);
@@ -1506,6 +1576,9 @@ export default function App() {
    * - Updates raw data.
    * - Tracks manual edits for highlighting.
    * - Re-runs validation.
+   * Called both for single-cell inline edits (editedFieldKey set, from the review table) and full-row
+   * edits (RowEditor modal, editedFieldKey omitted). Also feeds the "apply to similar rows" bulk-fix
+   * suggestion (pendingBulkAction state / applyBulkFix() above) when a fix on one red row matches others.
    */
   const handleRowUpdate = (updatedRow: any, editedFieldKey?: string) => {
     if (!updatedRow) return;
@@ -1646,6 +1719,7 @@ export default function App() {
     }
   };
 
+  // Dismisses a flagged duplicate row (adds it to ignoredDuplicates) and re-validates so it stops showing as a duplicate warning.
   const handleIgnoreDuplicate = (id: number) => {
     const newIgnored = new Set<number>(ignoredDuplicates);
     newIgnored.add(id);
@@ -1664,6 +1738,7 @@ export default function App() {
     setProcessedData(processed);
   };
 
+  // Dismisses a flagged price-outlier warning on a row, mirroring handleIgnoreDuplicate above.
   const handleIgnorePriceWarning = (id: number) => {
     const newIgnored = new Set<number>(ignoredPriceWarnings);
     newIgnored.add(id);
@@ -1682,6 +1757,8 @@ export default function App() {
     setProcessedData(processed);
   };
 
+  // Pops the last snapshot off the `history` stack (pushed by every edit/delete/swap above) and restores
+  // it as rawData, then re-validates. Wired to Ctrl/Cmd+Z via the keydown listener useEffect just below.
   const handleUndo = () => {
     if (history.length === 0) return;
     const previousState = history[history.length - 1];
@@ -1701,6 +1778,7 @@ export default function App() {
     setProcessedData(processed);
   };
 
+  // Runs when step/history/handleUndo change: registers a global Ctrl/Cmd+Z listener that calls handleUndo() above, only while on the review step and history isn't empty.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
@@ -1773,6 +1851,8 @@ export default function App() {
     setEditingRowId(null);
   };
 
+  // Begins a guided "review one flagged row at a time" queue over duplicate rows (reviewQueueType state
+  // above drives the DuplicateComparisonModal rendered in the review step JSX further below).
   const startDuplicateReview = () => {
     const items = processedData.filter(r => r.isDuplicate && r.duplicateOf !== undefined);
     if (items.length === 0) return;
@@ -1780,6 +1860,7 @@ export default function App() {
     setComparingDuplicate({ row1: items[0].duplicateOf!, row2: items[0].id });
   };
 
+  // Same guided-review flow as startDuplicateReview() above, but for price-outlier flagged rows.
   const startPriceReview = () => {
     const items = processedData.filter(r => r.isPriceOutlier && r.priceOutlierRefRowId !== undefined);
     if (items.length === 0) return;
@@ -1787,6 +1868,9 @@ export default function App() {
     setComparingDuplicate({ row1: items[0].priceOutlierRefRowId!, row2: items[0].id });
   };
 
+  // Runs whenever processedData/pendingQueueAdvance/reviewQueueType change: after the user resolves one
+  // item in the duplicate/price review queue (started by startDuplicateReview/startPriceReview above),
+  // this advances comparingDuplicate to the next flagged row, or closes the queue once none remain.
   useEffect(() => {
     if (!pendingQueueAdvance || !reviewQueueType) return;
     setPendingQueueAdvance(false);
@@ -1804,6 +1888,9 @@ export default function App() {
     }
   }, [processedData, pendingQueueAdvance, reviewQueueType]);
 
+  // "Re-validate" button handler: treats the current data as the new baseline (originalRawData), clears
+  // manual/auto-fix edit markers (but keeps dismissed duplicate/price warnings), then re-runs
+  // handleCalculationSmartFix() below to recompute everything from scratch.
   const handleRevalidate = () => {
     setIsAiProcessing(true);
     // Simulate a brief re-validation delay for UX
@@ -1829,6 +1916,8 @@ export default function App() {
     }, 600);
   };
 
+  // Discards all AI/calculation fixes and manual edits by restoring rawData from originalRawData (the
+  // untouched copy captured at upload time / handleRevalidate) and clearing every edit-tracking map.
   const handleRevertAiFixes = () => {
     const original = JSON.parse(JSON.stringify(originalRawData));
     setRawData(original);
@@ -1855,11 +1944,15 @@ export default function App() {
   };
 
   /**
-   * Performs deterministic calculations and data extractions (Mapping AI).
+   * Performs deterministic calculations and data extractions (Mapping AI, not a real AI call — despite
+   * the name, this is rule-based arithmetic, distinct from handleAiSmartFix() below which does call an AI model).
    * - Calculates Total Quantity from Case Size/Qty
    * - Splits "12 x 75cl" pack strings
    * - Calculates Total Value from Price/Qty
    * - Extracts currency symbols
+   * Called right after mapping completes (handleMappingComplete above), from handleRevalidate above, and
+   * from handleRowUpdate above when a quantity/price field is edited — anywhere quantities/totals might
+   * need recomputing. Tracks what it changed in autoFixedMap/calculationLogsMap (shown in the review UI).
    */
   const handleCalculationSmartFix = (
     customRawData?: any[], 
@@ -1962,11 +2055,9 @@ export default function App() {
     return processed;
   };
 
-  /**
-   * Uses Google Gemini AI to intelligently fix invalid rows.
-   * Sends a batch of "red" rows to the model with the schema context.
-   * The model returns corrected JSON which is then applied to the data.
-   */
+  // Persists a batch of processed rows to the backend session (only rows that were actually changed,
+  // unless forceAll is set). Called after most edit operations above (row update, delete, undo, revalidate,
+  // AI fix) so the saved session in the DB stays in sync with what's shown on screen.
   const handleBulkUpdateRows = async (processed: ProcessedRow[], forceAll = false) => {
     if (!currentSessionId) return;
     
@@ -1994,6 +2085,12 @@ export default function App() {
     }
   };
 
+  /**
+   * Uses an AI model (via the backend's /api/system/ai-fix proxy) to intelligently fix invalid ("red")
+   * rows. Sends only red rows, batched, with PII fields (names, emails, bank details, addresses)
+   * redacted before sending. Results are staged into pendingAiChanges/aiChangesSummary state (shown in
+   * the AiFixReviewModal further below) rather than applied immediately, so the user can review first.
+   */
   const handleAiSmartFix = async () => {
     if (processedData.length === 0) return;
     setIsAiProcessing(true);
@@ -2080,6 +2177,8 @@ export default function App() {
     }
   };
 
+  // Applies the AI-suggested fixes staged by handleAiSmartFix() above (optionally only a subset via
+  // selectedRowIds, when the user deselects some in AiFixReviewModal), merges them into rawData, and re-validates.
   const confirmAiFixes = (selectedRowIds?: number[]) => {
     let currentRawData = [...rawData];
     let currentAutoFixedMap = { ...autoFixedMap };
@@ -2143,13 +2242,18 @@ export default function App() {
   };
 
   /**
-   * Core Data Processing Engine.
+   * Core Data Processing Engine — the single most important function in this file.
    * Iterates through every row of the raw data and applies:
    * 1. Schema Mapping (Raw Header -> Schema Key)
    * 2. Sanitization (Cleaning strings, numbers, LWINs)
    * 3. Validation (Required fields, Data types, Business logic)
    * 4. Duplicate Detection
-   * 
+   * Turns rawData (whatever shape came from the uploaded file or manual grid) into ProcessedRow[]
+   * (processedData state), which is what the review step's table further below actually renders — every
+   * cell, status color, and error message on screen comes from what this function computes.
+   * Called after almost every edit in this file (upload, mapping, row edit, undo, delete, AI fix, revert,
+   * revalidate) since any change to the inputs needs a fresh validation pass.
+   *
    * @param data The raw data array
    * @param map The current column mapping
    * @param ignoredDups Set of duplicate IDs to ignore
@@ -2748,6 +2852,8 @@ export default function App() {
       // --- Duplicate Detection ---
       // Create a unique fingerprint for the row based on key fields.
       // If the fingerprint is seen before, mark as duplicate.
+      // Rows flagged here drive the DuplicateComparisonModal / guided review queue (startDuplicateReview
+      // above); dismissing one adds its id to ignoredDuplicates (currentIgnored here) so it's skipped next pass.
       let duplicateFingerprint = '';
       if (dataType === 'contacts' || dataType === 'private_clients' || dataType === 'trade_clients' || dataType === 'suppliers') {
          duplicateFingerprint = String(result['account_code'] || '').trim();
@@ -2836,6 +2942,9 @@ export default function App() {
     });
 
     // --- Price Anomaly Detection (Inventory and Client Reserves Only) ---
+    // Runs as a second pass over the already-processed rows (needs the full set to compute medians/
+    // group averages). Flagged rows drive the same guided-review modal as duplicates (startPriceReview
+    // above, priceOutlier* fields), and dismissals are tracked in ignoredPriceWarnings (currentIgnoredPrice here).
     if (dataType === 'inventory' || dataType === 'client_reserves') {
       // 1. Collect Valid Unit Prices
       // Unit Price = exc_vat_case / case_size (or case_cost_price for client_reserves)
@@ -2951,6 +3060,8 @@ export default function App() {
     return processed;
   };
 
+  // Generates and downloads a blank Excel template for the current data type, using SCHEMAS for column
+  // headers and highlighting mandatory fields in orange.
   const handleDownloadTemplate = async () => {
     const fields = SCHEMAS[dataType].fields;
     
@@ -3002,6 +3113,8 @@ export default function App() {
     document.body.removeChild(link);
   };
 
+  // Finds the in-progress (not completed, not archived) saved session for a given data type — used by
+  // renderDataTypeButton below to decide whether a data-type pill shows a "resume" state.
   const getActiveSessionForType = (type: DataType) => {
     return sessions.find(s => {
       if (s.status === 'completed' || s.disabled === 1) return false;
@@ -3014,6 +3127,7 @@ export default function App() {
     });
   };
 
+  // Same as getActiveSessionForType above, but for the most recent completed session of a data type.
   const getCompletedSessionForType = (type: DataType) => {
     return sessions.find(s => {
       if (s.status !== 'completed' || s.disabled === 1) return false;
@@ -3026,6 +3140,10 @@ export default function App() {
     });
   };
 
+  // "Start New" handler: archives (soft-deletes) whatever session is active/in-progress for the target
+  // data type on the backend, clears its completed badge, and resets ALL local wizard state back to the
+  // upload step so the user starts a fresh import for that data type. Wired to the "Start New" buttons in
+  // renderDataTypeButton below and the header's reset button.
   const handleStartNew = async (idOrEvent?: number | React.MouseEvent, typeOverride?: DataType) => {
     // Handle polymorphic arguments correctly
     const specificSessionId = typeof idOrEvent === 'number' ? idOrEvent : undefined;
@@ -3117,6 +3235,8 @@ export default function App() {
     console.log('[App] handleStartNew finished successfully');
   };
 
+  // Renders one data-type selector pill (e.g. "Inventory", "Contacts") shown in the upload step's header,
+  // including its resume/completed dropdown (uses getActiveSessionForType/getCompletedSessionForType above).
   const renderDataTypeButton = (type: DataType) => {
     const isCompleted = !!completedTasks[type];
     const activeSession = getActiveSessionForType(type);
@@ -3234,6 +3354,7 @@ export default function App() {
     );
   };
 
+  // Returns to the upload step without archiving anything (unlike handleStartNew) — just navigation, used by the logo click and back buttons.
   const goHome = () => {
     setStep('upload');
     setOpenCompletedDropdown(null);
@@ -3241,6 +3362,11 @@ export default function App() {
     loadSessions();
   };
 
+  // --- Top-level render branches ---
+  // Before the main wizard JSX, handle the states that replace the whole app: admin panel, Auth0 loading,
+  // logged-out, and backend auth error. Only once none of these apply do we fall through to the wizard below.
+
+  // Admin panel short-circuit: renders instead of the wizard when showAdmin is toggled on from the header.
   if (showAdmin && currentUser) {
     return (
       <AdminPanel
@@ -3251,8 +3377,8 @@ export default function App() {
     );
   }
 
-  if (authLoading) return null;
-  if (!isAuthenticated) { return <LoginPage />; }
+  if (authLoading) return null; // Auth0 still resolving the session — render nothing to avoid a login flash
+  if (!isAuthenticated) { return <LoginPage />; } // Not logged in — show the custom Auth0 login page
 
   if (authError) {
     return (
@@ -3271,9 +3397,13 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#F5F2ED] text-[#1A1A1A] font-sans p-8">
+      {/* --- Header: logo/home link, step indicator, user info, admin/logout/rules buttons, and (only
+          during the review step) the Mark Complete / Start New / Export Errors / Upload Corrections /
+          Export Clean CSV action bar (handleMarkAsComplete, handleStartNew, handleExportErrors,
+          handleUploadCorrections, handleExport — all defined above). --- */}
       <header className="max-w-[98vw] mx-auto mb-12 flex justify-between items-end">
         <div>
-          <motion.h1 
+          <motion.h1
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             whileHover={{ scale: 1.02, color: "#4f46e5" }}
@@ -3383,6 +3513,11 @@ export default function App() {
 
       <main className="max-w-[98vw] mx-auto min-h-[50vh] flex flex-col justify-center">
         <AnimatePresence mode="wait">
+          {/* ===================== UPLOAD STEP ===================== */}
+          {/* Data-type picker pills (renderDataTypeButton above) + either the FileUploader/manual-entry
+              start (handleUpload, handleOpenManualEntry) or, if a session already exists for the chosen
+              data type, a "session in progress" / "session completed" card (handleLoadSession,
+              handleReopenSession, handleExportCompleted, handleStartNew). */}
           {step === 'upload' && (
             <div className="space-y-8">
               <div className="space-y-10 max-w-4xl mx-auto flex flex-col items-center">
@@ -3578,6 +3713,10 @@ export default function App() {
             </div>
           )}
 
+          {/* ===================== MANUAL ENTRY STEP ===================== */}
+          {/* Only reached via handleOpenManualEntry -> handleStartManualEntry above (column picker modal
+              is rendered separately, further below). ManualEntryGrid does the actual row-by-row data
+              entry UI; onSubmit wires to handleManualSubmit above, which jumps straight to 'review'. */}
           {step === 'manual' && (
             <div className="max-w-[98vw] mx-auto space-y-6">
               <div className="flex items-center justify-between">
@@ -3601,6 +3740,10 @@ export default function App() {
             </div>
           )}
 
+          {/* ===================== MAP STEP ===================== */}
+          {/* Delegates entirely to the SchemaMapper component: lets the user match uploaded CSV headers
+              to schema fields (getCurrentSchema() above). onComplete calls handleMappingComplete above,
+              which runs processData()/handleCalculationSmartFix() and advances to 'review'. */}
           {step === 'map' && (
             <SchemaMapper
               headers={headers}
@@ -3612,6 +3755,13 @@ export default function App() {
             />
           )}
 
+          {/* ===================== REVIEW STEP ===================== */}
+          {/* The main workhorse screen: summary stat tiles (Total/Ready/Issues/Manual Fixes, click to
+              filter), the bulk-fix suggestion banner (pendingBulkAction / applyBulkFix above), the
+              toolbar (AI Smart Fix, Review Change, Undo AI Changes, Undo Edit, Review Duplicates/Prices —
+              handleAiSmartFix, handleRevalidate, handleRevertAiFixes, handleUndo, startDuplicateReview,
+              startPriceReview, all above), and further below the actual data table bound to processedData
+              with inline editing via startEditingCell/handleRowUpdate. */}
           {step === 'review' && (
             <div className="space-y-6">
               <AnimatePresence>
@@ -3834,6 +3984,11 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* The review data table itself: one column per schema field, one row per processedData
+                    entry. Header cells wire up the column-swap flow (swapSourceKey/swapPickingTarget
+                    state + handleSwapColumns above); body cells wire up inline editing (editingCell state,
+                    startEditingCell/handleRowUpdate above) and show status highlighting (red = error,
+                    orange = manual edit, amber/sky = AI/calculated fix). */}
                 <div className="overflow-auto flex-1 h-[75vh]">
                   <table className="w-full text-left border-collapse min-w-max">
                     <thead className="sticky top-0 bg-[#f8f9fa] z-10">
@@ -4160,6 +4315,11 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      {/* --- Modals rendered outside the step switch, so they can float above any step --- */}
+
+      {/* Side-by-side comparison for a duplicate or price-outlier row pair (comparingDuplicate state
+          above). Drives the guided review queue via onKeep -> setPendingQueueAdvance (handled by the
+          useEffect above that advances to the next flagged row). */}
       <AnimatePresence>
         {comparingDuplicate !== null && (
           <DuplicateComparisonModal
@@ -4206,9 +4366,10 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      {/* Full-row edit modal (editingRowId state above, set by the "Fix Issue" button in the review table). onSave wires to handleRowUpdate above. */}
       <AnimatePresence>
         {editingRowId !== null && (
-          <RowEditor 
+          <RowEditor
             row={processedData.find(r => r.id === editingRowId)}
             originalRow={processedData.find(r => r.id === editingRowId)?.duplicateOf !== undefined 
               ? processedData.find(r => r.id === processedData.find(r => r.id === editingRowId)?.duplicateOf) 
@@ -4220,6 +4381,7 @@ export default function App() {
           />
         )}
       </AnimatePresence>
+      {/* Add a new cellar/location to the master list (showAddLocationModal state above, opened from the + button on the Cellars pill). */}
       {showAddLocationModal && (
         <AddLocationModal
           onSave={handleAddLocation}
@@ -4227,6 +4389,9 @@ export default function App() {
         />
       )}
 
+      {/* Column picker modal for manual entry (showColumnPicker/pickerSelectedKeys state above, opened by
+          handleOpenManualEntry). Required fields are locked on; optional fields are toggled here and the
+          selection is confirmed by handleStartManualEntry above. */}
       {showColumnPicker && (() => {
         const schema = getCurrentSchema();
         const requiredFields = schema.fields.filter(f => f.required);
@@ -4311,13 +4476,15 @@ export default function App() {
 
       </main>
 
-      <RulesModal 
-        isOpen={isRulesModalOpen} 
-        onClose={() => setIsRulesModalOpen(false)} 
+      {/* "Validation Rules" help modal, opened from the header button (isRulesModalOpen state above). */}
+      <RulesModal
+        isOpen={isRulesModalOpen}
+        onClose={() => setIsRulesModalOpen(false)}
         dataType={dataType}
       />
 
-
+      {/* Review/confirm modal for AI Smart Fix results (isAiReviewModalOpen/aiChangesSummary state above,
+          populated by handleAiSmartFix). onConfirm applies the selected fixes via confirmAiFixes above. */}
       <AiFixReviewModal
         isOpen={isAiReviewModalOpen}
         onClose={() => setIsAiReviewModalOpen(false)}

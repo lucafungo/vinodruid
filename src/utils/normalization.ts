@@ -1,6 +1,10 @@
 /**
  * Normalization logic for wine data.
  * Standardizes bottle sizes, vintages, and other wine-specific fields.
+ *
+ * These functions are all called from App.tsx's processData() (the row-by-row cleanup pass that runs after
+ * the SchemaMapper mapping is applied and before validation), and normalizeDate() is also used directly by
+ * DateInput.tsx to normalize what the user types in the row editor.
  */
 
 /**
@@ -55,7 +59,7 @@ export function normalizeBottleSize(rawSize: string | number): number | null {
   // Extract numeric part and unit
   const numericMatch = cleanStr.match(/(\d+(\.\d+)?)/);
   if (!numericMatch) return null;
-  
+
   const val = parseFloat(numericMatch[1]);
   const unit = cleanStr.replace(numericMatch[0], '').trim();
 
@@ -65,14 +69,16 @@ export function normalizeBottleSize(rawSize: string | number): number | null {
   if (unit === 'l' || unit === 'liter' || unit === 'liters') return val * 100;
   if (unit === 'cl' || unit === 'centiliters' || unit === 'c') return val;
 
-  // 2. If no unit, use heuristics
+  // 2. If no unit was given, guess from the magnitude of the number alone, based on what real bottle
+  // sizes look like in each unit:
   // If value is very small (e.g., 0.75, 1.5, 4.5, 9), it's almost certainly Liters
   if (val < 20) return val * 100;
-  
+
   // If value is large (e.g., 375, 750, 1500, 9000), it's almost certainly Milliliters
   if (val >= 100) return val / 10;
-  
-  // If it's in the middle (e.g., 37.5, 75), assume it's already Centiliters
+
+  // If it's in the middle (e.g., 37.5, 75), assume it's already Centiliters — this is the range where a
+  // "no unit" number is most likely to already be expressed in cl (the standard 75cl bottle sits right here).
   return val;
 }
 
@@ -96,9 +102,12 @@ export function normalizeVintage(rawVintage: string | number): string {
   if (!numericMatch) return 'NV';
   
   let year = parseInt(numericMatch[0]);
-  
+
   if (year < 100) {
-    // Simple 2-digit logic: 00-26 -> 2000s, 27-99 -> 1900s
+    // Simple 2-digit logic: 00-26 -> 2000s, 27-99 -> 1900s.
+    // 26 is used as the pivot because this cutoff is meant to track "not more than a couple years in the
+    // future" relative to when this code was written — 2-digit years shouldn't resolve to a year that
+    // hasn't happened yet, since wine vintages are always in the past or very-near future.
     if (year <= 26) {
       year = 2000 + year;
     } else {
@@ -115,7 +124,8 @@ export function normalizeVintage(rawVintage: string | number): string {
 }
 
 /**
- * Standardizes currency symbols.
+ * Parses a raw price string/number into a numeric value plus a detected 3-letter currency code.
+ * Defaults to GBP when no currency symbol is present, since that's this app's primary market.
  */
 export function normalizeCurrency(rawPrice: string | number): { value: number | null, currency: string } {
   if (rawPrice === undefined || rawPrice === null || rawPrice === '') return { value: null, currency: 'GBP' };
@@ -133,6 +143,8 @@ export function normalizeCurrency(rawPrice: string | number): { value: number | 
   return { value, currency };
 }
 
+// Lowercase alias -> canonical country name. Only covers the aliases actually seen in imported data so far
+// (abbreviations, alternate names); anything not listed here is passed through unchanged by normalizeCountry.
 const COUNTRY_ALIASES: Record<string, string> = {
   'uk': 'United Kingdom',
   'gb': 'United Kingdom',
@@ -149,12 +161,17 @@ const COUNTRY_ALIASES: Record<string, string> = {
   'rsa': 'South Africa',
 };
 
+// Maps a country name/abbreviation to its canonical form via COUNTRY_ALIASES; unrecognized input is
+// returned trimmed but otherwise as-is. Called from App.tsx's processData() before country/region validation,
+// so region lookups match against the canonical name rather than whatever abbreviation was in the source file.
 export function normalizeCountry(raw: string): string {
   if (!raw) return raw;
   const key = raw.trim().toLowerCase();
   return COUNTRY_ALIASES[key] ?? raw.trim();
 }
 
+// Checks a day/month/year combination is a real calendar date (correct month range, and day within that
+// month's actual length — e.g. rejects 30 Feb).
 function isValidDate(d: number, m: number, y: number): boolean {
   if (m < 1 || m > 12) return false;
   if (y < 1900 || y > 2100) return false;
@@ -167,15 +184,19 @@ function pad2(n: number): string {
   return n.toString().padStart(2, '0');
 }
 
+// Expands a 2-digit year to 4 digits, using the same "near future rolls back a century" pivot idea as
+// normalizeVintage (here fixed at 29 rather than derived from the current year).
 function expandYear(y: number): number {
   if (y < 100) return y <= 29 ? 2000 + y : 1900 + y;
   return y;
 }
 
+// Formats day/month/year as the app's canonical dd/mm/yyyy display string.
 function fmtDate(d: number, m: number, y: number): string {
   return `${pad2(d)}/${pad2(m)}/${y}`;
 }
 
+// Recognized month names/abbreviations (lowercased) for the textual-date branch of normalizeDate() below.
 const MONTH_ABBR: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
   jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
@@ -195,6 +216,9 @@ export function normalizeDate(rawDate: string | number): string | null {
 
   const str = String(rawDate).trim();
 
+  // Tries several parsing strategies in order, from most to least specific, returning the first one that
+  // yields a valid calendar date. Falls through to null (unrecognized) only if none of them match.
+
   // 1. Numeric separated: d[sep]m[sep]y — handles /, -, . and 2- or 4-digit year
   const numMatch = str.match(/^(\d{1,4})[\/\-.](\d{1,2})[\/\-.](\d{1,4})$/);
   if (numMatch) {
@@ -203,11 +227,12 @@ export function normalizeDate(rawDate: string | number): string | null {
     const p3 = parseInt(numMatch[3], 10);
 
     if (numMatch[1].length === 4 || p1 > 31) {
-      // yyyy-mm-dd
+      // First segment is a 4-digit year, or too large to be a day/month -> yyyy-mm-dd (ISO-style)
       const y = expandYear(p1), m = p2, d = p3;
       if (isValidDate(d, m, y)) return fmtDate(d, m, y);
     } else {
-      // dd/mm/yy or dd/mm/yyyy (EU default)
+      // Otherwise assume dd/mm/yy or dd/mm/yyyy — the EU/UK day-first convention this app defaults to,
+      // rather than the US month-first convention (there's no way to tell "1/2/2025" apart otherwise).
       const d = p1, m = p2, y = expandYear(p3);
       if (isValidDate(d, m, y)) return fmtDate(d, m, y);
     }
@@ -233,7 +258,9 @@ export function normalizeDate(rawDate: string | number): string | null {
     return null;
   }
 
-  // 3. Excel serial number
+  // 3. Excel serial number — spreadsheets often store dates as "days since 1899-12-30" and this can survive
+  // into a pasted/exported CSV as a bare number. The 20000-100000 range roughly covers dates from 1954 to
+  // 2173, which is generous enough to catch real data while avoiding treating small plain numbers as dates.
   const serial = parseFloat(str);
   if (!isNaN(serial) && serial > 20000 && serial < 100000 && !/[-./]/.test(str)) {
     const date = new Date(1899, 11, 30 + Math.floor(serial));
@@ -241,7 +268,7 @@ export function normalizeDate(rawDate: string | number): string | null {
     if (isValidDate(d, m, y)) return fmtDate(d, m, y);
   }
 
-  // 4. JS Date fallback (handles ISO strings, "Mon Feb 01 2025", etc.)
+  // 4. Last resort: let the JS Date constructor have a go (handles ISO strings, "Mon Feb 01 2025", etc.)
   const parsed = new Date(str);
   if (!isNaN(parsed.getTime())) {
     const d = parsed.getDate(), m = parsed.getMonth() + 1, y = parsed.getFullYear();

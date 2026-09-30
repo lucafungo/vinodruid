@@ -2,6 +2,11 @@ import React from 'react';
 import { X, Check, ArrowRight, Sparkles, RefreshCcw, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
+// isOpen/onClose control visibility (App.tsx's isAiReviewModalOpen state).
+// changes is the list of AI-suggested fixes (App.tsx's aiChangesSummary), each with the row id, its original
+// values, the fixed values, and which fields were touched.
+// onConfirm(selectedIds) applies only the checked rows' fixes (App.tsx's confirmAiFixes); onRevert discards
+// every pending AI change and clears the review queue.
 interface AiFixReviewModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -15,7 +20,9 @@ interface AiFixReviewModalProps {
   onRevert: () => void;
 }
 
-export const AiFixReviewModal: React.FC<AiFixReviewModalProps> = ({ 
+// Modal that lets the user review AI-driven data cleanup suggestions side by side (original vs. cleaned value)
+// and pick which ones to keep before they're written back into processedData in App.tsx.
+export const AiFixReviewModal: React.FC<AiFixReviewModalProps> = ({
   isOpen, 
   onClose, 
   changes, 
@@ -24,6 +31,7 @@ export const AiFixReviewModal: React.FC<AiFixReviewModalProps> = ({
 }) => {
   const [selectedIds, setSelectedIds] = React.useState<number[]>([]);
 
+  // Every change starts pre-selected (checked) whenever the modal opens or the change set changes.
   React.useEffect(() => {
     if (isOpen) {
       setSelectedIds(changes.map(c => c.id));
@@ -33,11 +41,12 @@ export const AiFixReviewModal: React.FC<AiFixReviewModalProps> = ({
   if (!isOpen) return null;
 
   const toggleSelection = (id: number) => {
-    setSelectedIds(prev => 
+    setSelectedIds(prev =>
       prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
     );
   };
 
+  // Select-all / deselect-all checkbox in the table header.
   const toggleAll = () => {
     if (selectedIds.length === changes.length) {
       setSelectedIds([]);

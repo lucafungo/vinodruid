@@ -9,15 +9,23 @@ interface Field {
   hint?: string;
 }
 
+// fields is the schema's field list for the current data type (App.tsx passes the subset the user picked in
+// the column picker, via pickerSelectedKeys). onSubmit receives the non-empty rows the user entered — App.tsx's
+// handleManualSubmit runs them through the same validation pipeline as an uploaded file. onCancel returns to
+// the home/upload step (App.tsx's goHome).
 interface ManualEntryGridProps {
   fields: Field[];
   onSubmit: (rows: Record<string, string>[]) => void;
   onCancel: () => void;
 }
 
+// Builds one blank row object with every field key present but empty.
 const makeEmptyRow = (fields: Field[]): Record<string, string> =>
   Object.fromEntries(fields.map(f => [f.key, '']));
 
+// Spreadsheet-like grid for typing (or pasting) rows of data by hand, as an alternative to uploading a file —
+// rendered by App.tsx during the 'manual' step ("start from empty" flow). Starts with 5 blank rows and lets
+// the user add/delete rows and paste tab/newline-separated data from Excel-like sources.
 export function ManualEntryGrid({ fields, onSubmit, onCancel }: ManualEntryGridProps) {
   const [rows, setRows] = useState<Record<string, string>[]>(() =>
     Array.from({ length: 5 }, () => makeEmptyRow(fields))
@@ -27,6 +35,11 @@ export function ManualEntryGrid({ fields, onSubmit, onCancel }: ManualEntryGridP
     setRows(prev => prev.map((r, i) => i === rowIdx ? { ...r, [key]: value } : r));
   };
 
+  // Handles pasting a block of cells copied from Excel/Sheets (or similar) into one cell of the grid.
+  // Excel-style clipboard data is tab-separated within a row and newline-separated between rows, so we
+  // split on those to reconstruct a 2D block, then paste it starting at the cell that was focused
+  // (rowIdx/colIdx), growing the grid with extra blank rows if the pasted block runs past the current end.
+  // A true single-cell paste (no tabs/newlines) is left alone so the browser's default paste behavior applies.
   const handlePaste = (e: React.ClipboardEvent<HTMLInputElement | HTMLSelectElement>, rowIdx: number, colIdx: number) => {
     const text = e.clipboardData.getData('text');
     const pastedRows = text.split('\n').map(r => r.split('\t'));
@@ -40,6 +53,7 @@ export function ManualEntryGrid({ fields, onSubmit, onCancel }: ManualEntryGridP
         while (next.length <= targetRow) next.push(makeEmptyRow(fields));
         pastedCols.forEach((val, ci) => {
           const targetCol = colIdx + ci;
+          // Silently drop any pasted columns that run past the last field — grid only has fields.length columns.
           if (targetCol < fields.length) {
             next[targetRow][fields[targetCol].key] = val.trim();
           }
@@ -51,11 +65,13 @@ export function ManualEntryGrid({ fields, onSubmit, onCancel }: ManualEntryGridP
 
   const addRow = () => setRows(prev => [...prev, makeEmptyRow(fields)]);
 
+  // Deleting is disabled once only one row is left — the grid always keeps at least one row to edit.
   const deleteRow = (idx: number) => {
     if (rows.length === 1) return;
     setRows(prev => prev.filter((_, i) => i !== idx));
   };
 
+  // Drops fully-blank rows (e.g. unused rows from the initial 5) before submitting, then hands the rest to onSubmit.
   const handleSubmit = () => {
     const nonEmpty = rows.filter(r => fields.some(f => (r[f.key] || '').trim() !== ''));
     if (nonEmpty.length === 0) return;

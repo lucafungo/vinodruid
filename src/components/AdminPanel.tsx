@@ -1,10 +1,17 @@
+// Admin backoffice UI: lets an admin user manage organisations and users, and browse sessions, the audit
+// trail, and the master wine-region list. Rendered full-screen by App.tsx in place of the normal wizard
+// whenever showAdmin is true and a user is logged in (see the `if (showAdmin && currentUser)` branch there).
+// Talks directly to the FastAPI backend's /api/admin/* and /api/master/* endpoints (independent of the main
+// import wizard's own API calls in App.tsx).
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth0 } from '@auth0/auth0-react';
 
 const API = 'http://localhost:3000';
 
+// Which sidebar tab/section of the admin panel is currently shown.
 type Section = 'orgs' | 'users' | 'sessions' | 'audit' | 'regions';
 
+// Shape of one row from GET /api/admin/organisations.
 interface Org {
   organisation_id: number;
   name: string;
@@ -15,6 +22,7 @@ interface Org {
   created: string;
 }
 
+// Shape of one row from GET /api/admin/users.
 interface User {
   user_id: number;
   organisation_id: number;
@@ -30,6 +38,7 @@ interface User {
   created: string;
 }
 
+// Shape of one row from GET /api/admin/sessions — an import session started via the main wizard in App.tsx.
 interface Session {
   id: number;
   organisation_id: number;
@@ -42,6 +51,7 @@ interface Session {
   created_by_name: string | null;
 }
 
+// Shape of one row from GET /api/admin/audit — a single field-level change record.
 interface AuditEntry {
   id: number;
   session_id: number;
@@ -54,6 +64,7 @@ interface AuditEntry {
   created_by_name: string | null;
 }
 
+// Shape of one row from GET /api/master/regions — the read-only master wine-region reference list.
 interface Region {
   Region: string;
   Type: string;
@@ -63,12 +74,16 @@ interface Region {
   Designation: string | null;
 }
 
+// onBack returns to the main app (App.tsx sets showAdmin back to false).
+// currentUserForename/currentOrgName are just displayed in the sidebar footer — they come from
+// App.tsx's currentUser (the logged-in user record fetched after Auth0 login).
 interface Props {
   onBack: () => void;
   currentUserForename: string;
   currentOrgName: string;
 }
 
+// Shared Tailwind class strings reused across every table/form in this file (th/td cells, inputs, buttons).
 const th = 'text-left text-xs font-semibold text-gray-500 uppercase tracking-wide py-2 px-3 border-b border-gray-200 bg-gray-50 whitespace-nowrap';
 const td = 'py-2 px-3 text-sm border-b border-gray-100 align-middle';
 const inputCls = 'border border-gray-300 rounded px-2 py-1 text-sm w-full focus:outline-none focus:border-gray-400 font-sans';
@@ -80,6 +95,8 @@ const btnSuccess = 'px-3 py-1 text-xs rounded border border-gray-300 bg-white ho
 export function AdminPanel({ onBack, currentUserForename, currentOrgName }: Props) {
   const { getAccessTokenSilently } = useAuth0();
 
+  // Wrapper around fetch() that attaches the current Auth0 access token as a Bearer header — every admin
+  // API call below goes through this so the backend can enforce the admin role check on each request.
   const authFetch = useCallback(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const token = await getAccessTokenSilently();
     return fetch(input, {
@@ -111,6 +128,8 @@ export function AdminPanel({ onBack, currentUserForename, currentOrgName }: Prop
   const [regionSearch, setRegionSearch] = useState('');
   const [regionTypeFilter, setRegionTypeFilter] = useState('');
 
+  // Fetches the data for one sidebar section. Orgs are lazily loaded alongside users/sessions/audit (only
+  // fetched if not already in state) since those tables all need the org list for name lookups/filters.
   const loadSection = async (sec: Section) => {
     setLoading(true);
     setError(null);
@@ -150,6 +169,7 @@ export function AdminPanel({ onBack, currentUserForename, currentOrgName }: Prop
     }
   };
 
+  // Reload data and reset filters/open forms whenever the active section changes.
   useEffect(() => {
     loadSection(section);
     setSearch('');
@@ -157,6 +177,8 @@ export function AdminPanel({ onBack, currentUserForename, currentOrgName }: Prop
     setUserForm(null);
   }, [section]);
 
+  // Creates a new organisation (POST) or updates an existing one (PUT), based on whether orgForm already
+  // has an organisation_id, then refreshes the orgs list.
   const saveOrg = async () => {
     if (!orgForm) return;
     const isNew = !orgForm.organisation_id;
@@ -168,11 +190,15 @@ export function AdminPanel({ onBack, currentUserForename, currentOrgName }: Prop
     loadSection('orgs');
   };
 
+  // Enables or disables an organisation (soft toggle, not a delete) and refreshes the list.
   const toggleOrg = async (id: number, disable: boolean) => {
     await authFetch(`${API}/api/admin/organisations/${id}/${disable ? 'disable' : 'enable'}`, { method: 'POST' });
     loadSection('orgs');
   };
 
+  // Creates a new user (POST) or updates an existing one (PUT). For a new user, the backend also
+  // auto-provisions an Auth0 account; on success it may return a setup_url (password-set link to hand the
+  // new user) and/or an auth0_error if that provisioning step failed but the DB record was still created.
   const saveUser = async () => {
     if (!userForm) return;
     const isNew = !userForm.user_id;
@@ -200,11 +226,14 @@ export function AdminPanel({ onBack, currentUserForename, currentOrgName }: Prop
     loadSection('users');
   };
 
+  // Enables or disables a user account and refreshes the list.
   const toggleUser = async (id: number, disable: boolean) => {
     await authFetch(`${API}/api/admin/users/${id}/${disable ? 'disable' : 'enable'}`, { method: 'POST' });
     loadSection('users');
   };
 
+  // filteredOrgs/filteredUsers/filteredSessions/filteredAudit/filteredRegions apply the search box and
+  // dropdown filters for each section entirely client-side (all rows for a section are fetched up front).
   const filteredOrgs = orgs.filter(o =>
     !search || o.name.toLowerCase().includes(search.toLowerCase())
   );
@@ -238,6 +267,7 @@ export function AdminPanel({ onBack, currentUserForename, currentOrgName }: Prop
   const sessionTypes = [...new Set(sessions.map(s => s.session_type))].sort();
   const regionTypes = [...new Set(regions.map(r => r.Type))].sort();
 
+  // Renders one sidebar nav button, highlighted when it's the active section.
   const navItem = (sec: Section, label: string) => (
     <button
       key={sec}

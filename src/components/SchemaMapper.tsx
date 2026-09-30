@@ -2,6 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { ArrowRight, Check, Sparkles, Calculator, Hash, Table2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
+// headers are the column names from the uploaded/pasted file (App.tsx's `headers` state).
+// fields is the target schema for the selected data type (App.tsx's getCurrentSchema().fields) — what the
+// app needs each row to have. onComplete receives the finished field-key -> source-header mapping (or a
+// "__const__value" / "__ai_calculated_*__" sentinel, see below) — App.tsx's handleMappingComplete then uses
+// it to build processedData from rawData. onCancel goes back to the upload step (App.tsx's goHome).
+// requireEitherOr names two field keys where at least one (not necessarily both) must be mapped, e.g.
+// ['lwin7', 'listing_wine_name'] for inventory-like imports that can identify a wine either way.
+// previewRows (first few raw rows) are shown under each mapped column so the user can sanity-check the mapping.
 interface SchemaMapperProps {
   headers: string[];
   fields: { key: string, label: string, required: boolean, hint?: string, noAutoCalc?: boolean }[];
@@ -11,9 +19,20 @@ interface SchemaMapperProps {
   previewRows?: Record<string, any>[];
 }
 
+// Column-mapping step of the import wizard: lets the user match each uploaded file column to one of the
+// app's expected fields. Rendered by App.tsx during step === 'map', right after FileUploader hands off the
+// parsed file. Also offers two escape hatches per field: a constant value applied to every row, or (for a
+// few numeric fields) letting the app auto-calculate the value from other mapped fields.
 export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onComplete, onCancel, requireEitherOr, previewRows = [] }) => {
   const [mapping, setMapping] = useState<Record<string, string>>({});
 
+  // Best-effort auto-mapping run once when headers/fields are known: for each target field, try to find a
+  // matching uploaded column by comparing normalized (lowercased, non-alphanumeric stripped) names, from
+  // strictest to loosest match so a good exact match is never overridden by a looser one found later:
+  //   1. exact match on label or key (e.g. "Vintage" header <-> "vintage" field)
+  //   2. header contains the field label (e.g. header "Wine Vintage Year" contains "vintage")
+  //   3. field label contains the header (e.g. short header "Vin" is contained in label "vintage")
+  // Short strings (<=2/<=3 chars) are excluded from the fuzzy passes to avoid nonsense matches.
   useEffect(() => {
     const autoMap: Record<string, string> = {};
     const clean = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -44,6 +63,9 @@ export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onC
     setMapping(autoMap);
   }, [headers, fields]);
 
+  // "Constant" mode is encoded by prefixing the stored mapping value with the sentinel "__const__" followed
+  // by the literal value to apply to every row — this keeps mapping as a single Record<string,string> instead
+  // of needing a separate data structure for constants.
   const isConstantMode = (key: string) => mapping[key]?.startsWith('__const__') ?? false;
   const getConstantValue = (key: string) => mapping[key]?.startsWith('__const__') ? mapping[key].slice(9) : '';
 
@@ -59,6 +81,7 @@ export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onC
     setMapping(prev => ({ ...prev, [fieldKey]: `__const__${value}` }));
   };
 
+  // Switches a field back from constant mode to picking a source column.
   const handleBackToColumn = (fieldKey: string) => {
     setMapping(prev => {
       const next = { ...prev };
@@ -67,6 +90,7 @@ export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onC
     });
   };
 
+  // A field counts as "done" if it has a mapped column, or (in constant mode) a non-empty constant value typed in.
   const isFieldSatisfied = (key: string) => {
     const val = mapping[key];
     if (!val) return false;
@@ -74,6 +98,10 @@ export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onC
     return true;
   };
 
+  // These "canCalculate*" flags detect when a required numeric field can be derived from other mapped
+  // fields instead of needing its own column (e.g. total_quantity = case_size * case_quantity), letting the
+  // user skip mapping it. The actual calculation happens later in App.tsx once rows are built; this is just
+  // the UI's way of knowing which fields to treat as optional-if-derivable.
   const totalQtyNoAutoCalc = !!fields.find(f => f.key === 'total_quantity')?.noAutoCalc;
   const canCalculateTotalQty = !totalQtyNoAutoCalc && mapping['case_size'] && mapping['case_quantity'] && !mapping['total_quantity'];
   const canCalculateCaseQty = mapping['total_quantity'] && mapping['case_size'] && !mapping['case_quantity'];
@@ -99,6 +127,8 @@ export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onC
     (f.key === 'case_quantity' && canCalculateCaseQty)
   ).length;
 
+  // Renders one field's row: the status icon + label on the left, and either a column <select>, a constant-
+  // value input, or an "auto-calculated" indicator on the right, plus a small preview of sample values.
   const renderField = (field: { key: string, label: string, required: boolean, hint?: string, noAutoCalc?: boolean }, isReq: boolean) => {
     const isCalculatable = (field.key === 'total_quantity' && canCalculateTotalQty) ||
                            (field.key === 'case_quantity' && canCalculateCaseQty);
@@ -298,6 +328,8 @@ export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onC
         <button
           disabled={!isComplete}
           onClick={() => {
+            // Stamp sentinel values ("__ai_calculated_*__") into any derivable-but-unmapped fields so
+            // App.tsx's handleMappingComplete knows to compute them rather than read them from a column.
             const finalMapping = { ...mapping };
             fields.forEach(f => {
               if (!finalMapping[f.key]) {

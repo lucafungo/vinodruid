@@ -1,4 +1,9 @@
+// Reference lists and fuzzy-matching helpers used to validate the "Type"/"Sub-Type" wine fields.
+// WINE_TYPES/WINE_SUBTYPES/TYPE_TO_SUBTYPE are imported directly into App.tsx's processData() (to check a
+// row's type/sub-type against the approved list and suggest corrections) and into RulesModal.tsx (to display
+// the accepted values to the user).
 
+// The full list of accepted wine "Type" values (top-level category).
 export const WINE_TYPES = [
   'Red',
   'White',
@@ -13,6 +18,8 @@ export const WINE_TYPES = [
   'Unknown'
 ];
 
+// The full list of accepted "Sub-Type" values across all wine types combined (see TYPE_TO_SUBTYPE below for
+// which sub-types are valid for a given type).
 export const WINE_SUBTYPES = [
   // Red/White/Rose/Orange/Unknown
   'Still',
@@ -59,6 +66,8 @@ export const WINE_SUBTYPES = [
   // 'Sweet' is already listed above
 ];
 
+// Maps each wine Type to the Sub-Types considered valid for it, so App.tsx's processData() can flag a
+// mismatched combination (e.g. Type "Beer" with Sub-Type "Cognac") even if both values are individually valid.
 export const TYPE_TO_SUBTYPE: Record<string, string[]> = {
   'Red': ['Still', 'Sparkling', 'Sweet', 'Fortified'],
   'White': ['Still', 'Sparkling', 'Sweet', 'Fortified'],
@@ -91,6 +100,8 @@ export const TYPE_TO_SUBTYPE: Record<string, string[]> = {
  * required to change one word into the other.
  */
 export function getLevenshteinDistance(a: string, b: string): number {
+  // Standard dynamic-programming edit-distance matrix: matrix[i][j] holds the edit distance between the
+  // first i characters of b and the first j characters of a.
   const matrix = [];
 
   // Increment along the first column of each row
@@ -126,17 +137,19 @@ export function getLevenshteinDistance(a: string, b: string): number {
 /**
  * Finds the closest match in a list of valid strings.
  * Returns the match if the distance is within the threshold, otherwise null.
+ * Used by App.tsx's processData() to suggest a fix when a row's Type/Sub-Type is misspelled
+ * (e.g. "Whit" -> "White") rather than just rejecting it outright.
  */
 export function findClosestMatch(input: string, validOptions: string[]): string | null {
   if (!input) return null;
-  
+
   const normalizedInput = input.trim().toLowerCase();
   let bestMatch = null;
   let minDistance = Infinity;
 
   for (const option of validOptions) {
     const normalizedOption = option.toLowerCase();
-    
+
     // Exact match check (ignoring case)
     if (normalizedInput === normalizedOption) {
       return option;
@@ -150,7 +163,8 @@ export function findClosestMatch(input: string, validOptions: string[]): string 
     }
   }
 
-  // Dynamic threshold based on input length
+  // Dynamic threshold based on input length: short words (e.g. "Red") can only differ by 1 character before
+  // they risk matching the wrong option, while longer words can tolerate more typos relative to their length.
   let threshold = 3;
   if (normalizedInput.length <= 3) threshold = 1;
   else if (normalizedInput.length <= 6) threshold = 2;

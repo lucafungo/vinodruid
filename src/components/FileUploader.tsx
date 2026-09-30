@@ -3,11 +3,15 @@ import * as XLSX from 'xlsx';
 import { Upload, FileText, X, Table as TableIcon } from 'lucide-react';
 import { motion } from 'motion/react';
 
+// onUpload is called once the file is parsed, with the row objects, the raw header row, and the file name —
+// App.tsx's handleUpload uses this to populate rawData/headers and move the wizard into the 'map' step.
 interface FileUploaderProps {
   onUpload: (data: any[], headers: string[], fileName: string) => void;
   accept?: string;
 }
 
+// Drag-and-drop / click-to-browse file picker for the initial "upload your data" step (step === 'upload' in
+// App.tsx). Parses CSV/XLSX client-side with the xlsx library and hands the parsed rows to onUpload.
 export const FileUploader: React.FC<FileUploaderProps> = ({ onUpload, accept = ".csv, .xlsx, .xls" }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -18,6 +22,9 @@ export const FileUploader: React.FC<FileUploaderProps> = ({ onUpload, accept = "
     }
   };
 
+  // Reads the file (as binary for Excel, as text for CSV) and parses it via the xlsx library, which
+  // handles both formats. Extracts the header row separately from the row objects so callers get both
+  // the raw column names (for SchemaMapper) and the parsed data (for previews).
   const processFile = (file: File) => {
     const reader = new FileReader();
     const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls');
@@ -56,6 +63,7 @@ export const FileUploader: React.FC<FileUploaderProps> = ({ onUpload, accept = "
     }
   };
 
+  // preventDefault is required so onDrop actually fires (browsers otherwise navigate to the dropped file).
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
   };

@@ -193,7 +193,35 @@ Applied as first call in all 12 admin endpoints: `admin_list_orgs`, `admin_creat
 
 **Frontend:** Admin panel tab hidden for non-admin users. Access level (`user` / `admin`) set when creating a user via the admin panel.
 
-**MFA:** Diagnosed but deferred. Root cause: Auth0 silent auth (`prompt=none` iframe) cannot complete an MFA challenge, causing an infinite loop. Fix requires `useRefreshTokens={true}` + `cacheLocation="localstorage"` + full logout and re-login to issue a refresh token. See memory note `project_mfa_solution.md`. Dedicated session needed.
+### MFA (multi-factor authentication) ✅
+Added on its own branch (`feature/mfa`), separate from Session 10.
+
+**Auth0 side:**
+- Upgraded Auth0 tenant from Free to the Essentials plan — MFA is not available at all on Free, including basic TOTP
+- Enabled the One-time Password (TOTP) factor (Google Authenticator / Authy compatible)
+- Policy set to "Always" — every login requires a code after password
+
+**`src/main.tsx` — switched from silent-auth (iframe) token renewal to refresh tokens:**
+```tsx
+<Auth0Provider
+  domain={import.meta.env.VITE_AUTH0_DOMAIN}
+  clientId={import.meta.env.VITE_AUTH0_CLIENT_ID}
+  useRefreshTokens={true}
+  cacheLocation="localstorage"
+  authorizationParams={{
+    redirect_uri: window.location.origin,
+    audience: import.meta.env.VITE_AUTH0_AUDIENCE,
+    scope: 'openid profile email offline_access',
+  }}
+>
+```
+Root cause this replaces: Auth0's silent token renewal happens in a hidden iframe (`prompt=none`). MFA set to "Always" cannot be completed inside a hidden iframe, so silent renewal failed and looped indefinitely once MFA was turned on. Refresh tokens remove the need for the iframe entirely.
+
+**Two follow-up bugs found and fixed in `src/App.tsx` after the above was live** (MFA worked, but the app showed no org name, no admin panel, no sessions):
+- `authFetch` called `getAccessTokenSilently()` independently for every request that fired on page load (master cellars, master clients, regions, sessions, `/api/me` — five parallel calls). Refresh token rotation invalidates the token on every use, so concurrent calls could race and use an already-rotated token. Fixed by de-duplicating concurrent token fetches behind a single shared `tokenPromiseRef`.
+- The `useEffect` hooks that load master data/sessions and `/api/me` depended only on `[authFetch]`, with no check on `isAuthenticated`. They fired once, immediately on mount, before the redirect-based login + MFA flow had finished — and since `authFetch`'s reference never changes, they never re-ran once login actually completed. This was the real blocker. Fixed by adding `if (!isAuthenticated) return;` and `isAuthenticated` to both effects' dependency arrays.
+
+Full diagnosis and fix history in memory note `project_mfa_solution.md`.
 
 ### Session 11 — Auth testing and hardening
 - End-to-end test of full auth flow: create user in Auth0, log in, confirm correct organisation loads
@@ -356,7 +384,7 @@ Each session covers one area of operations: the process is documented and then w
 | 7 | — | — | ✅ combined into session 6 |
 | 8 | 8 | 1 | ✅ Admin API endpoints + admin panel UI |
 | 9 | 9 | 2 | ✅ Auth0 setup + FastAPI JWT + React login |
-| 10 | 10 | 2 | ✅ Role-based access enforcement (admin check on all 12 endpoints) |
+| 10 | 10 | 2 | ✅ Role-based access enforcement (admin check on all 12 endpoints); ✅ MFA (TOTP, refresh tokens) |
 | 11 | 11 | 2 | Auth testing and hardening |
 | 12 | 12 | 3 | Azure SQL provisioned + schema migrated |
 | 13 | 13 | 3 | FastAPI deployed to App Service |

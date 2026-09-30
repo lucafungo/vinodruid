@@ -3,12 +3,18 @@ import { X, CheckCircle2, AlertTriangle, Info, ChevronDown, ChevronUp } from 'lu
 import { motion, AnimatePresence } from 'motion/react';
 import { WINE_TYPES, WINE_SUBTYPES } from '../utils/wineValidation';
 
+// isOpen/onClose control visibility (App.tsx's isRulesModalOpen, toggled from a "view rules" button).
+// dataType picks which set of validation rules to display (e.g. 'inventory', 'cellars', 'contacts') — matches
+// App.tsx's DataType/dataType state, so this always documents the rules for whatever import type is active.
 interface RulesModalProps {
   isOpen: boolean;
   onClose: () => void;
   dataType: string;
 }
 
+// Read-only reference modal explaining the validation rules for the currently selected data type — purely
+// informational, does not affect actual validation (which lives in App.tsx's processData/validateRow and in
+// utils/wineValidation.ts). Uses WINE_TYPES/WINE_SUBTYPES from wineValidation.ts to list accepted values.
 export const RulesModal: React.FC<RulesModalProps> = ({ isOpen, onClose, dataType }) => {
   return (
     <AnimatePresence>
@@ -203,6 +209,8 @@ export const RulesModal: React.FC<RulesModalProps> = ({ isOpen, onClose, dataTyp
   );
 };
 
+// One rule row in the modal: a title + description, optionally styled as "critical" (red), and optionally
+// expandable to show the full list of accepted values (e.g. wine types/sub-types).
 const RuleItem = ({ title, description, type = 'normal', acceptedValues }: { title: string, description: string, type?: 'normal' | 'critical', acceptedValues?: Record<string, string[]> }) => {
   const [isExpanded, setIsExpanded] = useState(false);
 

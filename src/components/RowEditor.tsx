@@ -3,6 +3,11 @@ import { X, Save, AlertCircle, Table, Trash2, Copy } from 'lucide-react';
 import { motion } from 'motion/react';
 import { DateInput } from './DateInput';
 
+// row is the processedData row being edited (may carry isPriceOutlier/priceOutlierRef/priceOutlierType flags
+// set by App.tsx's anomaly detection). originalRow, when set, is the row this one was flagged as a duplicate
+// of, shown for side-by-side comparison. fields is the schema's field list. onSave receives the edited row
+// (App.tsx's handleRowUpdate writes it back into processedData and re-validates). onDelete removes the row
+// entirely (handleDeleteRow). onClose dismisses without saving.
 interface RowEditorProps {
   row: any;
   originalRow?: any;
@@ -12,6 +17,9 @@ interface RowEditorProps {
   onClose: () => void;
 }
 
+// Full-row edit modal used in the review step (App.tsx renders it when editingRowId is set) to fix every
+// field of a single row at once, with context panels for validation errors, the original uploaded values,
+// price-outlier warnings, and duplicate-row comparisons.
 export const RowEditor: React.FC<RowEditorProps> = ({ row, originalRow, fields, onSave, onDelete, onClose }) => {
   const [formData, setFormData] = useState({ ...row });
 
@@ -24,6 +32,9 @@ export const RowEditor: React.FC<RowEditorProps> = ({ row, originalRow, fields, 
     onSave(formData);
   };
 
+  // Fields that should render as a DateInput (calendar-aware) rather than a plain text box: an explicit
+  // allow-list plus a few common naming conventions (_date/_on suffix, date_ prefix) to catch schema fields
+  // not enumerated above.
   const DATE_KEYS = new Set([
     'acquired_on', 'landed_on', 'order_date', 'delivery_date', 'invoice_date',
     'booking_date', 'settlement_date', 'dispatch_date',
