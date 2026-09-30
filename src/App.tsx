@@ -467,8 +467,18 @@ interface ProcessedRow {
 export default function App() {
   const { getAccessTokenSilently, isAuthenticated, logout, isLoading: authLoading } = useAuth0();
 
+  // Refresh token rotation invalidates the previous token on every use. Without
+  // de-duplication, the several authFetch calls that fire in parallel on load would
+  // race to use the same cached refresh token, and all but the first would fail.
+  const tokenPromiseRef = useRef<Promise<string> | null>(null);
+
   const authFetch = useCallback(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const token = await getAccessTokenSilently();
+    if (!tokenPromiseRef.current) {
+      tokenPromiseRef.current = getAccessTokenSilently().finally(() => {
+        tokenPromiseRef.current = null;
+      });
+    }
+    const token = await tokenPromiseRef.current;
     return fetch(input, {
       ...init,
       headers: { ...init?.headers, Authorization: `Bearer ${token}` },
@@ -543,6 +553,7 @@ export default function App() {
   const [showAddLocationModal, setShowAddLocationModal] = useState(false);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     authFetch('/api/master/cellars')
       .then(r => r.json())
       .then(data => setMasterCellars(data))
@@ -556,7 +567,7 @@ export default function App() {
       .then(data => setRegionRefData(data))
       .catch(e => console.error("Failed to load regions", e));
     loadSessions();
-  }, [authFetch]);
+  }, [authFetch, isAuthenticated]);
 
   useEffect(() => {
     if (step === 'upload') {
@@ -875,6 +886,7 @@ export default function App() {
 
   // Fetch identity from backend — validates org + user and updates org-scoped storage key
   useEffect(() => {
+    if (!isAuthenticated) return;
     authFetch('/api/me')
       .then(r => r.json().then(d => ({ ok: r.ok, data: d })))
       .then(({ ok, data }) => {
@@ -893,7 +905,7 @@ export default function App() {
         }
       })
       .catch(err => console.error('[/api/me]', err));
-  }, [authFetch]);
+  }, [authFetch, isAuthenticated]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
