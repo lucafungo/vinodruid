@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useAuth0 } from '@auth0/auth0-react';
 import ExcelJS from 'exceljs';
 import { normalizeBottleSize, normalizeVintage, normalizeCurrency, normalizeDate, normalizeCountry } from './utils/normalization';
@@ -526,6 +526,11 @@ export default function App() {
   
   // UI state
   const [showOnlyErrors, setShowOnlyErrors] = useState(false);
+  // Pagination for the review table — without this, a large file renders every row as real DOM at
+  // once (confirmed to bloat to 100k+ DOM nodes for a 5,000-row file), which is what made scrolling/
+  // editing sluggish even after the processData chunking fix stopped the upload itself from freezing.
+  const [reviewPage, setReviewPage] = useState(1);
+  const [reviewPageSize, setReviewPageSize] = useState(100);
   const [editingRowId, setEditingRowId] = useState<number | null>(null);
   const [editingCell, setEditingCell] = useState<{ rowId: number, fieldKey: string } | null>(null);
   const [editStartingValue, setEditStartingValue] = useState<string | null>(null);
@@ -542,6 +547,9 @@ export default function App() {
   const [isRulesModalOpen, setIsRulesModalOpen] = useState(false);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
+  // Drives the "Validating your file..." progress overlay while processData() chunks through a large file.
+  const [isValidating, setIsValidating] = useState(false);
+  const [validationProgress, setValidationProgress] = useState({ done: 0, total: 0 });
   const [isAiReviewModalOpen, setIsAiReviewModalOpen] = useState(false);
   const [pendingAiChanges, setPendingAiChanges] = useState<any[]>([]);
   const [aiChangesSummary, setAiChangesSummary] = useState<any[]>([]);
@@ -651,6 +659,7 @@ export default function App() {
   // lands back exactly where they left off.
   const handleLoadSession = async (sessionId: number) => {
     setIsAiProcessing(true); // Re-use for loading state
+    setReviewPage(1);
     console.log('[Resume] Loading session:', sessionId);
     try {
       const response = await authFetch(`/api/sessions/${sessionId}`);
@@ -720,9 +729,9 @@ export default function App() {
           }));
           setProcessedData(normalizedRows);
         } else if (Object.keys(map).length > 0) {
-          const processed = processData(
-            reconstructedRaw, 
-            map, 
+          const processed = await processData(
+            reconstructedRaw,
+            map,
             regionRefData,
             new Set(fields.ignoredDuplicates || []),
             fields.autoFixedMap || {},
@@ -849,7 +858,7 @@ export default function App() {
    * Triggered from the review step's "apply to all similar rows" prompt (pendingBulkAction state above);
    * re-runs processData() afterward so validation/status reflect the change, same as any other edit.
    */
-  const applyBulkFix = () => {
+  const applyBulkFix = async () => {
     if (!pendingBulkAction) return;
 
     // Save current state to history
@@ -876,7 +885,7 @@ export default function App() {
     setPendingBulkAction(null);
     
     // Re-validate
-    const processed = processData(newData, mapping, regionRefData, ignoredDuplicates, autoFixedMap, newManualEditsMap, ignoredPriceWarnings, calculationLogsMap);
+    const processed = await processData(newData, mapping, regionRefData, ignoredDuplicates, autoFixedMap, newManualEditsMap, ignoredPriceWarnings, calculationLogsMap);
     setProcessedData(processed);
 
     if (currentSessionId) {
@@ -1197,7 +1206,7 @@ export default function App() {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       const text = ev.target?.result as string;
       const lines = text.split('\n').map(l => l.trimEnd()).filter(l => l.trim());
       if (lines.length < 2) return;
@@ -1257,7 +1266,7 @@ export default function App() {
       }
 
       setRawData(newRawData);
-      const processed = processData(newRawData, mapping);
+      const processed = await processData(newRawData, mapping);
       setProcessedData(processed);
       e.target.value = '';
     };
@@ -1270,9 +1279,10 @@ export default function App() {
    * runs an initial (unmapped) processData() pass, creates a backend session, and advances to the map step.
    * Note: despite the old comment below, there's no separate LWIN-check step anymore — everything goes to 'map'.
    */
-  const handleUpload = (data: any[], fields: string[], name: string) => {
+  const handleUpload = async (data: any[], fields: string[], name: string) => {
     setValidationError(null);
     setCurrentSessionId(null);
+    setReviewPage(1);
 
     if ((dataType === 'inventory' || dataType === 'client_reserves' || dataType === 'sales_orders' || dataType === 'purchase_orders') && masterCellars.length === 0) {
       setValidationError("Please load your Cellars first. This import type requires a Master Cellar List for validation.");
@@ -1295,7 +1305,10 @@ export default function App() {
     // Always go to mapping first — LWIN presence is detected per-row during processing
     const initialStep: Step = 'map';
 
-    const initialProcessed = processData(dataWithIds, {});
+    setIsValidating(true);
+    const initialProcessed = await processData(dataWithIds, {}, regionRefData, undefined, undefined, undefined, undefined, undefined,
+      (done, total) => setValidationProgress({ done, total }));
+    setIsValidating(false);
     setProcessedData(initialProcessed);
     
     // Create initial session in DB
@@ -1326,7 +1339,7 @@ export default function App() {
   // Two cases: for a file upload, columns still point at original CSV headers via `mapping`, so we just
   // swap the mapping entries; for manual entry there's no mapping (values live directly under the schema
   // keys in rawData), so we swap the values in each row instead. Either way processData() re-runs after.
-  const handleSwapColumns = (targetKey: string) => {
+  const handleSwapColumns = async (targetKey: string) => {
     if (!swapSourceKey || swapSourceKey === targetKey) {
       setSwapSourceKey(null);
       setSwapPickingTarget(false);
@@ -1355,7 +1368,7 @@ export default function App() {
       setRawData(newRawData);
     }
 
-    const processed = processData(newRawData, newMapping);
+    const processed = await processData(newRawData, newMapping);
     setProcessedData(processed);
     setSwapSourceKey(null);
     setSwapPickingTarget(false);
@@ -1398,7 +1411,8 @@ export default function App() {
   // Called by ManualEntryGrid when the user finishes typing rows by hand: stores them as rawData with an
   // empty mapping (manual rows already use schema keys directly), runs processData(), creates a backend
   // session, and jumps straight to the review step.
-  const handleManualSubmit = (rows: Record<string, string>[]) => {
+  const handleManualSubmit = async (rows: Record<string, string>[]) => {
+    setReviewPage(1);
     const dataWithIds = rows.map((r, i) => ({ ...r, id: i }));
     setRawData(dataWithIds);
     setOriginalRawData(JSON.parse(JSON.stringify(dataWithIds)));
@@ -1410,7 +1424,10 @@ export default function App() {
     setCurrentSessionId(null);
     setMapping({});
 
-    const processed = processData(dataWithIds, {});
+    setIsValidating(true);
+    const processed = await processData(dataWithIds, {}, regionRefData, undefined, undefined, undefined, undefined, undefined,
+      (done, total) => setValidationProgress({ done, total }));
+    setIsValidating(false);
     setProcessedData(processed);
 
     authFetch('/api/sessions', {
@@ -1489,20 +1506,23 @@ export default function App() {
     );
     
     let processed: ProcessedRow[] = [];
+    setIsValidating(true);
     if (canCalc) {
-      processed = handleCalculationSmartFix(rawData, newMapping, true);
+      processed = await handleCalculationSmartFix(rawData, newMapping, true);
     } else {
-      processed = processData(
-        rawData, 
-        newMapping, 
-        regionRefData, 
-        ignoredDuplicates, 
-        autoFixedMap, 
-        manualEditsMap, 
-        ignoredPriceWarnings, 
-        calculationLogsMap
+      processed = await processData(
+        rawData,
+        newMapping,
+        regionRefData,
+        ignoredDuplicates,
+        autoFixedMap,
+        manualEditsMap,
+        ignoredPriceWarnings,
+        calculationLogsMap,
+        (done, total) => setValidationProgress({ done, total })
       );
     }
+    setIsValidating(false);
     setProcessedData(processed);
 
     if (!currentSessionId) {
@@ -1546,7 +1566,7 @@ export default function App() {
    * edits (RowEditor modal, editedFieldKey omitted). Also feeds the "apply to similar rows" bulk-fix
    * suggestion (pendingBulkAction state / applyBulkFix() above) when a fix on one red row matches others.
    */
-  const handleRowUpdate = (updatedRow: any, editedFieldKey?: string) => {
+  const handleRowUpdate = async (updatedRow: any, editedFieldKey?: string) => {
     if (!updatedRow) return;
 
     // Save current state to history before changing
@@ -1632,7 +1652,7 @@ export default function App() {
       const newVal = updatedRow[editedFieldKey];
       
       // We only suggest bulk fixes for specific fields
-      const bulkFixableFields = ['cellar_name', 'account_code', 'producer', 'country', 'region', 'lwin7', 'sub_region', 'vintage'];
+      const bulkFixableFields = ['cellar_name', 'account_code', 'producer', 'country', 'region', 'lwin7', 'sub_region', 'vintage', 'type', 'sub_type', 'currency', 'warehouse_location', 'tax_status', 'packaging_type'];
       
       if (oldVal && newVal && String(oldVal).trim() !== String(newVal).trim() && bulkFixableFields.includes(editedFieldKey)) {
         const otherRowsWithSameVal = processedData.filter(r => 
@@ -1659,9 +1679,9 @@ export default function App() {
     
     // If we are editing a mapped field, we must re-process to catch side effects
     if (editedFieldKey && calcFields.includes(editedFieldKey)) {
-      processed = handleCalculationSmartFix(newData, mapping, true, nextManualEditsMap);
+      processed = await handleCalculationSmartFix(newData, mapping, true, nextManualEditsMap);
     } else {
-      processed = processData(newData, mapping, regionRefData, newIgnoredDups, autoFixedMap, nextManualEditsMap, newIgnoredPrice, calculationLogsMap);
+      processed = await processData(newData, mapping, regionRefData, newIgnoredDups, autoFixedMap, nextManualEditsMap, newIgnoredPrice, calculationLogsMap);
       setProcessedData(processed);
     }
 
@@ -1686,38 +1706,38 @@ export default function App() {
   };
 
   // Dismisses a flagged duplicate row (adds it to ignoredDuplicates) and re-validates so it stops showing as a duplicate warning.
-  const handleIgnoreDuplicate = (id: number) => {
+  const handleIgnoreDuplicate = async (id: number) => {
     const newIgnored = new Set<number>(ignoredDuplicates);
     newIgnored.add(id);
     setIgnoredDuplicates(newIgnored);
     // We use actual current state values instead of undefined/empty maps to ensure highlights persist
-    const processed = processData(
-      rawData, 
-      mapping, 
-      regionRefData, 
-      ignoredDuplicates, 
-      autoFixedMap, 
-      manualEditsMap, 
-      ignoredPriceWarnings, 
+    const processed = await processData(
+      rawData,
+      mapping,
+      regionRefData,
+      ignoredDuplicates,
+      autoFixedMap,
+      manualEditsMap,
+      ignoredPriceWarnings,
       calculationLogsMap
     );
     setProcessedData(processed);
   };
 
   // Dismisses a flagged price-outlier warning on a row, mirroring handleIgnoreDuplicate above.
-  const handleIgnorePriceWarning = (id: number) => {
+  const handleIgnorePriceWarning = async (id: number) => {
     const newIgnored = new Set<number>(ignoredPriceWarnings);
     newIgnored.add(id);
     setIgnoredPriceWarnings(newIgnored);
     // We use actual current state values instead of undefined/empty maps to ensure highlights persist
-    const processed = processData(
-      rawData, 
-      mapping, 
-      regionRefData, 
-      ignoredDuplicates, 
-      autoFixedMap, 
-      manualEditsMap, 
-      newIgnored, 
+    const processed = await processData(
+      rawData,
+      mapping,
+      regionRefData,
+      ignoredDuplicates,
+      autoFixedMap,
+      manualEditsMap,
+      newIgnored,
       calculationLogsMap
     );
     setProcessedData(processed);
@@ -1725,20 +1745,20 @@ export default function App() {
 
   // Pops the last snapshot off the `history` stack (pushed by every edit/delete/swap above) and restores
   // it as rawData, then re-validates. Wired to Ctrl/Cmd+Z via the keydown listener useEffect just below.
-  const handleUndo = () => {
+  const handleUndo = async () => {
     if (history.length === 0) return;
     const previousState = history[history.length - 1];
     setHistory(prev => prev.slice(0, -1));
     setRawData(previousState);
     // We must pass all current maps to maintain highlights after undo
-    const processed = processData(
-      previousState, 
-      mapping, 
-      regionRefData, 
-      ignoredDuplicates, 
-      autoFixedMap, 
-      manualEditsMap, 
-      ignoredPriceWarnings, 
+    const processed = await processData(
+      previousState,
+      mapping,
+      regionRefData,
+      ignoredDuplicates,
+      autoFixedMap,
+      manualEditsMap,
+      ignoredPriceWarnings,
       calculationLogsMap
     );
     setProcessedData(processed);
@@ -1763,7 +1783,7 @@ export default function App() {
    * - Updates history.
    * - Shifts indices in edit maps to keep them synchronized.
    */
-  const handleDeleteRow = (id: number) => {
+  const handleDeleteRow = async (id: number) => {
     // Save current state to history before deleting
     setHistory(prev => [...prev, JSON.parse(JSON.stringify(rawData))].slice(-20));
     
@@ -1798,22 +1818,22 @@ export default function App() {
     const nextCalcLogs = updateMap(calculationLogsMap);
     setCalculationLogsMap(nextCalcLogs);
     
-    const processed = processData(
-      newData, 
-      mapping, 
-      regionRefData, 
-      ignoredDuplicates, 
-      autoFixedMap, 
-      manualEditsMap, 
-      ignoredPriceWarnings, 
+    const processed = await processData(
+      newData,
+      mapping,
+      regionRefData,
+      ignoredDuplicates,
+      autoFixedMap,
+      manualEditsMap,
+      ignoredPriceWarnings,
       nextCalcLogs
     );
     setProcessedData(processed);
-    
+
     if (currentSessionId) {
       handleBulkUpdateRows(processed, true);
     }
-    
+
     setEditingRowId(null);
   };
 
@@ -1854,23 +1874,36 @@ export default function App() {
     }
   }, [processedData, pendingQueueAdvance, reviewQueueType]);
 
+  // Keeps the review table's current page in range when the filtered row count shrinks (e.g. a row is
+  // deleted, the Issues-Only filter is applied, or a fresh file is processed) — otherwise the table body
+  // (which reads reviewPage directly) could render an empty page while showing stale page controls.
+  useEffect(() => {
+    const filteredCount = processedData.filter(row => {
+      if (showOnlyErrors) return row.status === 'red';
+      if (showOnlyEdited) return manualEditsMap[row.id] !== undefined;
+      return true;
+    }).length;
+    const totalPages = Math.max(1, Math.ceil(filteredCount / reviewPageSize));
+    setReviewPage(p => Math.min(p, totalPages));
+  }, [processedData, showOnlyErrors, showOnlyEdited, manualEditsMap, reviewPageSize]);
+
   // "Re-validate" button handler: treats the current data as the new baseline (originalRawData), clears
   // manual/auto-fix edit markers (but keeps dismissed duplicate/price warnings), then re-runs
   // handleCalculationSmartFix() below to recompute everything from scratch.
   const handleRevalidate = () => {
     setIsAiProcessing(true);
     // Simulate a brief re-validation delay for UX
-    setTimeout(() => {
+    setTimeout(async () => {
       // Treat current data as the new "original" source of truth
       setOriginalRawData(JSON.parse(JSON.stringify(rawData)));
-      
+
       // Clear edit markers — preserve ignored duplicates and price warnings
       // as those were deliberate user decisions that should survive a re-validate
       setManualEditsMap({});
       setAutoFixedMap({});
-      
+
       // Re-process with cleared markers and run calculations
-      const processed = handleCalculationSmartFix(rawData, mapping, true);
+      const processed = await handleCalculationSmartFix(rawData, mapping, true);
       setProcessedData(processed);
 
       // Sync to backend if session exists
@@ -1884,15 +1917,15 @@ export default function App() {
 
   // Discards all AI/calculation fixes and manual edits by restoring rawData from originalRawData (the
   // untouched copy captured at upload time / handleRevalidate) and clearing every edit-tracking map.
-  const handleRevertAiFixes = () => {
+  const handleRevertAiFixes = async () => {
     const original = JSON.parse(JSON.stringify(originalRawData));
     setRawData(original);
     setAutoFixedMap({});
     setCalculationLogsMap({});
     setIgnoredDuplicates(new Set());
     setIgnoredPriceWarnings(new Set());
-    
-    const processed = processData(
+
+    const processed = await processData(
       original, 
       mapping, 
       regionRefData, 
@@ -1920,12 +1953,12 @@ export default function App() {
    * from handleRowUpdate above when a quantity/price field is edited — anywhere quantities/totals might
    * need recomputing. Tracks what it changed in autoFixedMap/calculationLogsMap (shown in the review UI).
    */
-  const handleCalculationSmartFix = (
-    customRawData?: any[], 
+  const handleCalculationSmartFix = async (
+    customRawData?: any[],
     customMapping?: Record<string, string>,
     isAutoTrigger = false,
     overrideManualEdits?: Record<number, string[]>
-  ): ProcessedRow[] => {
+  ): Promise<ProcessedRow[]> => {
     const dataToProcess = customRawData || rawData;
     const activeMapping = customMapping || mapping;
 
@@ -2014,7 +2047,8 @@ export default function App() {
     setRawData(newData);
     setAutoFixedMap(newAutoFixedMap);
     setCalculationLogsMap(newCalculationLogs);
-    const processed = processData(newData, activeMapping, regionRefData, ignoredDuplicates, newAutoFixedMap, overrideManualEdits || manualEditsMap, ignoredPriceWarnings, newCalculationLogs);
+    const processed = await processData(newData, activeMapping, regionRefData, ignoredDuplicates, newAutoFixedMap, overrideManualEdits || manualEditsMap, ignoredPriceWarnings, newCalculationLogs,
+      (done, total) => setValidationProgress({ done, total }));
     setProcessedData(processed);
     
     if (!isAutoTrigger) setIsAiProcessing(false);
@@ -2145,7 +2179,7 @@ export default function App() {
 
   // Applies the AI-suggested fixes staged by handleAiSmartFix() above (optionally only a subset via
   // selectedRowIds, when the user deselects some in AiFixReviewModal), merges them into rawData, and re-validates.
-  const confirmAiFixes = (selectedRowIds?: number[]) => {
+  const confirmAiFixes = async (selectedRowIds?: number[]) => {
     let currentRawData = [...rawData];
     let currentAutoFixedMap = { ...autoFixedMap };
     let currentCalcLogs = { ...calculationLogsMap };
@@ -2186,17 +2220,17 @@ export default function App() {
     setAutoFixedMap(currentAutoFixedMap);
     setCalculationLogsMap(currentCalcLogs);
     
-    const processed = processData(
-      currentRawData, 
-      mapping, 
-      regionRefData, 
-      ignoredDuplicates, 
-      currentAutoFixedMap, 
-      manualEditsMap, 
-      ignoredPriceWarnings, 
+    const processed = await processData(
+      currentRawData,
+      mapping,
+      regionRefData,
+      ignoredDuplicates,
+      currentAutoFixedMap,
+      manualEditsMap,
+      ignoredPriceWarnings,
       currentCalcLogs
     );
-    
+
     setProcessedData(processed);
     if (currentSessionId) {
       handleBulkUpdateRows(processed);
@@ -2226,16 +2260,24 @@ export default function App() {
    * @param overrideAutoFixed (Optional) Override for auto-fixed fields map
    * @param overrideManualEdits (Optional) Override for manual edits map
    */
-  const processData = (
-    data: any[], 
-    map: Record<string, string>, 
+  // Rows are validated in chunks with a yield (setTimeout 0) between each, instead of one long
+  // synchronous pass, so a large file (thousands of rows) doesn't freeze the browser tab for the
+  // duration of validation. onProgress (if given) is called after each chunk so callers can drive a
+  // progress bar. This is why processData is async now — every call site below must await it.
+  const PROCESS_CHUNK_SIZE = 300;
+  const yieldToMain = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+
+  const processData = async (
+    data: any[],
+    map: Record<string, string>,
     refData: any[] = regionRefData,
     ignoredDups?: Set<number>,
     overrideAutoFixed?: Record<number, string[]>,
     overrideManualEdits?: Record<number, string[]>,
     ignoredPrice?: Set<number>,
-    overrideCalcLogs?: Record<number, Record<string, string>>
-  ): ProcessedRow[] => {
+    overrideCalcLogs?: Record<number, Record<string, string>>,
+    onProgress?: (done: number, total: number) => void
+  ): Promise<ProcessedRow[]> => {
     const currentSchema = getCurrentSchema();
     const seenRows = new Map<string, number>();
     const seenCellarNames = new Map<string, number>();
@@ -2246,7 +2288,11 @@ export default function App() {
     const currentManualEdits = overrideManualEdits || manualEditsMap;
     const currentCalcLogs = overrideCalcLogs || calculationLogsMap;
 
-    const processed = data.map((row, idx) => {
+    const processed: any[] = [];
+    for (let chunkStart = 0; chunkStart < data.length; chunkStart += PROCESS_CHUNK_SIZE) {
+    const chunkEnd = Math.min(chunkStart + PROCESS_CHUNK_SIZE, data.length);
+    for (let idx = chunkStart; idx < chunkEnd; idx++) {
+      const row = data[idx];
       const result: any = { id: idx, raw: row, status: 'green', errors: [] as string[], fieldErrors: [] as string[] };
       let hasError = false;
       let hasWarning = false;
@@ -2273,6 +2319,14 @@ export default function App() {
         return '';
       };
 
+      // A valid 7-digit LWIN alone identifies the wine downstream, so the wine-identity fields below
+      // (name, producer, vintage, country, region, type, sub-type — the same set the no-LWIN required-
+      // fields check further down treats as substitutable by LWIN) are not individually validated when
+      // present: their content isn't flagged even if it looks wrong, since LWIN is authoritative.
+      const lwinForBypassCheck = String(getValue('lwin7') || '').replace(/[^0-9]/g, '');
+      const hasValidLwin = (dataType === 'inventory' || dataType === 'client_reserves' || dataType === 'sales_orders' || dataType === 'purchase_orders')
+        && lwinForBypassCheck.length === 7;
+
       // --- Field-Level Validation Loop ---
       currentSchema.fields.forEach(field => {
         let rawValue = getValue(field.key);
@@ -2297,38 +2351,41 @@ export default function App() {
 
         // --- Validation: Region/Sub-Region against Reference Data ---
         if ((field.key === 'region' || field.key === 'sub_region') && refData.length > 0 && !isMissing) {
-           const val = String(rawValue).trim().toLowerCase();
-           const rawCountry = getValue('country');
-           const country = String(rawCountry || '').trim().toLowerCase();
-           
-           // Check if value exists in 'Region' column of reference data
-           const entry = refData.find(r => r.Region?.toLowerCase() === val);
+           // Skipped entirely when the row has a valid LWIN — see hasValidLwin above.
+           if (!hasValidLwin) {
+             const val = String(rawValue).trim().toLowerCase();
+             const rawCountry = getValue('country');
+             const country = String(rawCountry || '').trim().toLowerCase();
 
-           if (!entry) {
-             result.status = 'red';
-             result.errors.push(`Invalid ${field.label}: '${rawValue}'. Not found in reference table.`);
-             hasError = true;
-             result.fieldErrors.push(field.key);
-           } else if (country) {
-             // Basic hierarchy check: is the country the parent or grandparent?
-             let isMatch = false;
-             let current = entry;
-             let depth = 0;
-             while (current && depth < 5) {
-               if (current.Parent?.toLowerCase() === country || current.Region?.toLowerCase() === country) {
-                 isMatch = true;
-                 break;
-               }
-               const parentName = current.Parent;
-               current = parentName ? refData.find(r => r.Region?.toLowerCase() === parentName.toLowerCase()) : null;
-               depth++;
-             }
+             // Check if value exists in 'Region' column of reference data
+             const entry = refData.find(r => r.Region?.toLowerCase() === val);
 
-             if (!isMatch) {
+             if (!entry) {
                result.status = 'red';
-               result.errors.push(`${field.label} '${rawValue}' does not belong to country '${rawCountry}'.`);
+               result.errors.push(`Invalid ${field.label}: '${rawValue}'. Not found in reference table.`);
                hasError = true;
                result.fieldErrors.push(field.key);
+             } else if (country) {
+               // Basic hierarchy check: is the country the parent or grandparent?
+               let isMatch = false;
+               let current = entry;
+               let depth = 0;
+               while (current && depth < 5) {
+                 if (current.Parent?.toLowerCase() === country || current.Region?.toLowerCase() === country) {
+                   isMatch = true;
+                   break;
+                 }
+                 const parentName = current.Parent;
+                 current = parentName ? refData.find(r => r.Region?.toLowerCase() === parentName.toLowerCase()) : null;
+                 depth++;
+               }
+
+               if (!isMatch) {
+                 result.status = 'red';
+                 result.errors.push(`${field.label} '${rawValue}' does not belong to country '${rawCountry}'.`);
+                 hasError = true;
+                 result.fieldErrors.push(field.key);
+               }
              }
            }
            result[field.key] = rawValue;
@@ -2336,7 +2393,8 @@ export default function App() {
         else if (field.key === 'country' && refData.length > 0 && !isMissing) {
            const normalized = normalizeCountry(String(rawValue));
            const val = normalized.toLowerCase();
-           const isValid = refData.some(r => r.Region?.toLowerCase() === val && r.Type?.toLowerCase() === 'country');
+           // Skipped when the row has a valid LWIN — see hasValidLwin above.
+           const isValid = hasValidLwin || refData.some(r => r.Region?.toLowerCase() === val && r.Type?.toLowerCase() === 'country');
 
            if (!isValid) {
              result.status = 'red';
@@ -2397,16 +2455,17 @@ export default function App() {
         // Vintage: Year (1900-2026) or 'NV'
         else if (field.key === 'vintage') {
           const normVintage = normalizeVintage(rawValue);
-          if (normVintage === 'INVALID') {
-            result[field.key] = rawValue; 
+          // Invalid-format error skipped when the row has a valid LWIN — see hasValidLwin above.
+          if (normVintage === 'INVALID' && !hasValidLwin) {
+            result[field.key] = rawValue;
             result.status = 'red';
             result.errors.push(`Invalid vintage: ${rawValue}. Must be YYYY, NV, or 1`);
             hasError = true;
             result.fieldErrors.push(field.key);
           } else {
-            result[field.key] = normVintage;
+            result[field.key] = normVintage === 'INVALID' ? rawValue : normVintage;
           }
-        } 
+        }
         // Bottle Size: Standardized to Centiliters (cl)
         else if (field.key === 'size') {
           const normSize = normalizeBottleSize(rawValue);
@@ -2424,7 +2483,8 @@ export default function App() {
         else if (field.key === 'listing_wine_name' || field.key === 'display_wine_name') {
            const strVal = String(rawValue || '');
            // Allowed: letters (including accents), numbers, space, hyphen, dot, comma, apostrophes (standard & curly), parens, ampersand, percent.
-           if (/[^\p{L}0-9\s.,'’()&%-]/u.test(strVal)) {
+           // Skipped when the row has a valid LWIN — see hasValidLwin above.
+           if (!hasValidLwin && /[^\p{L}0-9\s.,'’()&%-]/u.test(strVal)) {
               result.status = 'red';
               result.errors.push(`Wine name contains special characters: ${strVal}`);
               hasError = true;
@@ -2468,6 +2528,9 @@ export default function App() {
              const exactMatch = WINE_TYPES.find(t => t.toLowerCase() === val.toLowerCase());
              if (exactMatch) {
                result[field.key] = exactMatch; // Normalize
+             } else if (hasValidLwin) {
+               // Skipped when the row has a valid LWIN — see hasValidLwin above.
+               result[field.key] = val;
              } else {
                const closest = findClosestMatch(val, WINE_TYPES);
                if (closest) {
@@ -2496,7 +2559,10 @@ export default function App() {
 
              if (exactMatch) {
                normalizedSubType = exactMatch;
-               result[field.key] = exactMatch; 
+               result[field.key] = exactMatch;
+             } else if (hasValidLwin) {
+               // Skipped when the row has a valid LWIN — see hasValidLwin above.
+               result[field.key] = val;
              } else {
                const closest = findClosestMatch(val, WINE_SUBTYPES);
                if (closest) {
@@ -2511,8 +2577,8 @@ export default function App() {
                result[field.key] = val;
              }
 
-             // Check if Sub-Type is valid for the selected Type
-             if (currentType && TYPE_TO_SUBTYPE[currentType]) {
+             // Check if Sub-Type is valid for the selected Type — skipped when the row has a valid LWIN.
+             if (!hasValidLwin && currentType && TYPE_TO_SUBTYPE[currentType]) {
                 const allowedSubTypes = TYPE_TO_SUBTYPE[currentType];
                 const isAllowed = allowedSubTypes.some(st => st.toLowerCase() === normalizedSubType.toLowerCase());
 
@@ -2783,6 +2849,8 @@ export default function App() {
             if (!isFieldPresent('vintage')) missingFields.push('Vintage');
             if (!isFieldPresent('country')) missingFields.push('Country');
             if (!isFieldPresent('region')) missingFields.push('Region');
+            if (!isFieldPresent('type')) missingFields.push('Wine Type');
+            if (!isFieldPresent('sub_type')) missingFields.push('Wine Sub-Type');
 
             if (missingFields.length > 0) {
                result.status = 'red';
@@ -2904,8 +2972,11 @@ export default function App() {
         result.calculationLogs = currentCalcLogs[idx];
       }
 
-      return result;
-    });
+      processed.push(result);
+    }
+    onProgress?.(chunkEnd, data.length);
+    if (chunkEnd < data.length) await yieldToMain();
+    }
 
     // --- Price Anomaly Detection (Inventory and Client Reserves Only) ---
     // Runs as a second pass over the already-processed rows (needs the full set to compute medians/
@@ -3773,20 +3844,20 @@ export default function App() {
               </AnimatePresence>
               <div className="flex flex-col md:flex-row gap-4 items-stretch">
                 <div className="flex-1 grid grid-cols-4 gap-4">
-                  <button 
-                    onClick={() => { setShowOnlyErrors(false); setShowOnlyEdited(false); }}
+                  <button
+                    onClick={() => { setShowOnlyErrors(false); setShowOnlyEdited(false); setReviewPage(1); }}
                     className={`p-6 rounded-3xl border shadow-sm transition-all text-left ${
-                      !showOnlyErrors && !showOnlyEdited 
-                        ? 'bg-black border-black text-white ring-4 ring-black/10' 
+                      !showOnlyErrors && !showOnlyEdited
+                        ? 'bg-black border-black text-white ring-4 ring-black/10'
                         : 'bg-white border-black/5 text-black hover:bg-black/[0.02]'
                     }`}
                   >
                     <p className={`text-[10px] uppercase tracking-widest mb-1 ${!showOnlyErrors && !showOnlyEdited ? 'text-white/60' : 'text-black/40'}`}>Total Rows</p>
                     <p className="text-3xl font-serif">{processedData.length}</p>
                   </button>
-                  
-                  <button 
-                    onClick={() => { setShowOnlyErrors(false); setShowOnlyEdited(false); }}
+
+                  <button
+                    onClick={() => { setShowOnlyErrors(false); setShowOnlyEdited(false); setReviewPage(1); }}
                     className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100 shadow-sm hover:bg-emerald-100 transition-all text-left"
                   >
                     <p className="text-[10px] uppercase tracking-widest text-emerald-600/60 mb-1">Ready</p>
@@ -3795,11 +3866,11 @@ export default function App() {
                     </p>
                   </button>
 
-                  <button 
-                    onClick={() => { setShowOnlyErrors(true); setShowOnlyEdited(false); }}
+                  <button
+                    onClick={() => { setShowOnlyErrors(true); setShowOnlyEdited(false); setReviewPage(1); }}
                     className={`p-6 rounded-3xl border shadow-sm transition-all text-left ${
-                      showOnlyErrors 
-                        ? 'bg-rose-500 border-rose-600 text-white ring-4 ring-rose-100' 
+                      showOnlyErrors
+                        ? 'bg-rose-500 border-rose-600 text-white ring-4 ring-rose-100'
                         : 'bg-rose-50 border-rose-100 text-rose-700 hover:bg-rose-100'
                     }`}
                   >
@@ -3809,8 +3880,8 @@ export default function App() {
                     </p>
                   </button>
 
-                  <button 
-                    onClick={() => { setShowOnlyErrors(false); setShowOnlyEdited(true); }}
+                  <button
+                    onClick={() => { setShowOnlyErrors(false); setShowOnlyEdited(true); setReviewPage(1); }}
                     className={`p-6 rounded-3xl border shadow-sm transition-all text-left ${
                       showOnlyEdited 
                         ? 'bg-orange-500 border-orange-600 text-white ring-4 ring-orange-100' 
@@ -3825,8 +3896,8 @@ export default function App() {
                 </div>
                 
                 <div className="bg-white p-2 rounded-3xl border border-black/5 shadow-sm flex items-center gap-1">
-                  <button 
-                    onClick={() => setShowOnlyErrors(false)}
+                  <button
+                    onClick={() => { setShowOnlyErrors(false); setReviewPage(1); }}
                     className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-2xl text-[10px] font-bold uppercase tracking-widest transition-all ${
                       !showOnlyErrors ? 'bg-black text-white shadow-lg' : 'text-black/40 hover:bg-black/5'
                     }`}
@@ -3834,8 +3905,8 @@ export default function App() {
                     <LayoutGrid size={14} />
                     Full File
                   </button>
-                  <button 
-                    onClick={() => setShowOnlyErrors(true)}
+                  <button
+                    onClick={() => { setShowOnlyErrors(true); setReviewPage(1); }}
                     className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-2xl text-[10px] font-bold uppercase tracking-widest transition-all ${
                       showOnlyErrors ? 'bg-rose-500 text-white shadow-lg' : 'text-black/40 hover:bg-black/5'
                     }`}
@@ -4028,6 +4099,10 @@ export default function App() {
                           if (showOnlyEdited) return manualEditsMap[row.id] !== undefined;
                           return true;
                         })
+                        // Paginated so a large file doesn't mount every row as DOM at once (confirmed to
+                        // bloat to 100k+ nodes for 5,000 rows) — see reviewPage/reviewPageSize state above
+                        // and the pagination controls rendered below the table.
+                        .slice((reviewPage - 1) * reviewPageSize, reviewPage * reviewPageSize)
                         .map((row, idx) => (
                         <tr key={row.id} className="border-b border-[#dadce0] hover:bg-[#f1f3f4] transition-colors group h-9">
                           <td className="px-2 py-1 text-center border-r border-[#dadce0] bg-[#f8f9fa] text-[10px] text-[#70757a] select-none sticky left-0 z-10">
@@ -4276,6 +4351,67 @@ export default function App() {
                     </tbody>
                   </table>
                 </div>
+
+                {/* Pagination footer for the review table above — keeps the DOM small regardless of file
+                    size (see reviewPage/reviewPageSize state and the .slice() on the table body above). */}
+                {(() => {
+                  const filteredCount = processedData.filter(row => {
+                    if (showOnlyErrors) return row.status === 'red';
+                    if (showOnlyEdited) return manualEditsMap[row.id] !== undefined;
+                    return true;
+                  }).length;
+                  const totalPages = Math.max(1, Math.ceil(filteredCount / reviewPageSize));
+                  const clampedPage = Math.min(reviewPage, totalPages);
+                  const rangeStart = filteredCount === 0 ? 0 : (clampedPage - 1) * reviewPageSize + 1;
+                  const rangeEnd = Math.min(clampedPage * reviewPageSize, filteredCount);
+                  return (
+                    <div className="flex items-center justify-between px-4 py-2 bg-[#f8f9fa] border-t border-[#dadce0] text-[11px] text-[#5f6368]">
+                      <div className="flex items-center gap-2">
+                        <span>Rows per page</span>
+                        <select
+                          value={reviewPageSize}
+                          onChange={(e) => { setReviewPageSize(Number(e.target.value)); setReviewPage(1); }}
+                          className="border border-[#dadce0] rounded px-2 py-1 bg-white cursor-pointer"
+                        >
+                          <option value={50}>50</option>
+                          <option value={100}>100</option>
+                          <option value={200}>200</option>
+                          <option value={500}>500</option>
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span>{filteredCount === 0 ? '0 rows' : `${rangeStart}–${rangeEnd} of ${filteredCount}`}</span>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => setReviewPage(1)}
+                            disabled={clampedPage <= 1}
+                            className="px-2 py-1 rounded border border-[#dadce0] bg-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-black/5"
+                            title="First page"
+                          >«</button>
+                          <button
+                            onClick={() => setReviewPage(p => Math.max(1, p - 1))}
+                            disabled={clampedPage <= 1}
+                            className="px-2 py-1 rounded border border-[#dadce0] bg-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-black/5"
+                            title="Previous page"
+                          >‹</button>
+                          <span className="px-2">{clampedPage} of {totalPages}</span>
+                          <button
+                            onClick={() => setReviewPage(p => Math.min(totalPages, p + 1))}
+                            disabled={clampedPage >= totalPages}
+                            className="px-2 py-1 rounded border border-[#dadce0] bg-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-black/5"
+                            title="Next page"
+                          >›</button>
+                          <button
+                            onClick={() => setReviewPage(totalPages)}
+                            disabled={clampedPage >= totalPages}
+                            className="px-2 py-1 rounded border border-[#dadce0] bg-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-black/5"
+                            title="Last page"
+                          >»</button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
           </div>
         )}
@@ -4462,6 +4598,44 @@ export default function App() {
           setPendingAiChanges([]);
         }}
       />
+
+      {/* Validation progress overlay — shown while processData() chunks through the rows (isValidating/
+          validationProgress state above). Blocks interaction but stays responsive/animated since the
+          underlying work now yields between chunks instead of running as one long blocking pass. */}
+      <AnimatePresence>
+        {isValidating && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center"
+          >
+            <motion.div
+              initial={{ scale: 0.96, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className="bg-white rounded-2xl shadow-xl p-8 w-[360px] text-center"
+            >
+              <p className="text-sm font-semibold text-black mb-1">Validating your file…</p>
+              <p className="text-xs text-black/50 mb-4">
+                {validationProgress.total > 0
+                  ? `${validationProgress.done.toLocaleString()} / ${validationProgress.total.toLocaleString()} rows`
+                  : 'Starting…'}
+              </p>
+              <div className="w-full h-2 bg-black/[0.06] rounded-full overflow-hidden">
+                <motion.div
+                  className="h-full bg-[#1A1A1A] rounded-full"
+                  animate={{
+                    width: validationProgress.total > 0
+                      ? `${Math.min(100, (validationProgress.done / validationProgress.total) * 100)}%`
+                      : '5%'
+                  }}
+                  transition={{ ease: 'easeOut' }}
+                />
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <footer className="max-w-[98vw] mx-auto mt-20 pt-8 border-t border-black/10 flex justify-between items-center text-[10px] uppercase tracking-[0.2em] text-black/30">
         <div>© 2026 vinoDruid</div>
