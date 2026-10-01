@@ -86,10 +86,10 @@ export const FileUploader: React.FC<FileUploaderProps> = ({ onUpload, accept = "
         onDragOver={handleDragOver}
         onDrop={handleDrop}
         onClick={() => fileInputRef.current?.click()}
-        className="border-2 border-dashed border-black/10 rounded-2xl p-6 flex flex-col items-center justify-center bg-white hover:bg-black/[0.01] hover:border-black/20 transition-all cursor-pointer group"
+        className="border-2 border-dashed border-[#d0dde6] rounded-2xl p-6 flex flex-col items-center justify-center bg-white hover:border-[#2d97af] hover:bg-[#f0f8fb] transition-all cursor-pointer group"
       >
-        <div className="w-10 h-10 bg-black/[0.03] rounded-xl flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
-          <Upload className="text-black/40" size={20} />
+        <div className="w-10 h-10 bg-[#eaf5f9] rounded-xl flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+          <Upload className="text-[#2d97af]" size={20} />
         </div>
         <h3 className="text-base font-medium mb-1">Upload your data file</h3>
         <p className="text-[11px] text-black/40 mb-4 text-center max-w-xs">

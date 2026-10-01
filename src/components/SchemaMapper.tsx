@@ -230,7 +230,7 @@ export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onC
     <motion.div
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
-      className="w-full max-w-4xl mx-auto bg-white rounded-2xl shadow-lg border border-black/5 overflow-hidden"
+      className="w-full max-w-4xl mx-auto bg-white rounded-2xl shadow-[0_2px_12px_rgba(27,48,64,0.08)] border border-[#e0e8ef] overflow-hidden"
     >
       {/* Compact header */}
       <div className="px-5 py-3 border-b border-black/5 flex justify-between items-center">

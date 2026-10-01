@@ -14,7 +14,6 @@ import { DuplicateComparisonModal } from './components/DuplicateComparisonModal'
 import { AddLocationModal } from './components/AddLocationModal';
 import { AiFixReviewModal } from './components/AiFixReviewModal';
 import { AdminPanel } from './components/AdminPanel';
-import LoginPage from './components/LoginPage';
 import { ManualEntryGrid } from './components/ManualEntryGrid';
 
 // --- Types ---
@@ -472,7 +471,7 @@ interface ProcessedRow {
 
 export default function App() {
   // Auth0 hook: gives us login state plus a function to fetch a fresh access token.
-  const { getAccessTokenSilently, isAuthenticated, logout, isLoading: authLoading } = useAuth0();
+  const { getAccessTokenSilently, isAuthenticated, logout, isLoading: authLoading, loginWithRedirect } = useAuth0();
 
   // authFetch wraps the browser's fetch() so every API call in this file (session save/load, master
   // data lookups, AI fix calls, etc.) automatically gets an Auth0 bearer token attached. Use this instead
@@ -3293,18 +3292,18 @@ export default function App() {
               setOpenCompletedDropdown(null);
             }
           }}
-          className={`px-6 py-2 rounded-full text-xs font-bold uppercase tracking-widest transition-all border flex items-center gap-2 ${
-            dataType === type 
+          className={`px-5 py-2 rounded-full text-xs font-semibold tracking-wider transition-all border-[1.5px] flex items-center gap-2 ${
+            dataType === type
               ? (isInProgress
-                  ? 'bg-amber-500 text-white border-amber-500 shadow-lg scale-105'
-                  : isCompleted 
-                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-lg scale-105' 
-                    : 'bg-black text-white border-black shadow-lg scale-105')
+                  ? 'bg-amber-500 text-white border-amber-500 shadow-md scale-105'
+                  : isCompleted
+                    ? 'bg-[#3d8a5a] text-white border-[#3d8a5a] shadow-md scale-105'
+                    : 'bg-[#2d97af] text-white border-[#2d97af] shadow-md scale-105')
               : (isInProgress
-                  ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 shadow-sm'
-                  : isCompleted 
-                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100' 
-                    : 'bg-white text-black/40 border-black/5 hover:border-black/20')
+                  ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
+                  : isCompleted
+                    ? 'bg-[#edf7f1] text-[#3d8a5a] border-[#4a9a68] hover:bg-emerald-50'
+                    : 'bg-white text-[#5a7080] border-[#e0e8ef] hover:border-[#2d97af] hover:text-[#2d97af]')
           }`}
         >
           {isCompleted && !isInProgress && <CheckCircle2 size={12} />}
@@ -3414,8 +3413,8 @@ export default function App() {
     );
   }
 
-  if (authLoading) return null; // Auth0 still resolving the session — render nothing to avoid a login flash
-  if (!isAuthenticated) { return <LoginPage />; } // Not logged in — show the custom Auth0 login page
+  if (authLoading) return null;
+  if (!isAuthenticated) { loginWithRedirect(); return null; }
 
   if (authError) {
     return (
@@ -3433,122 +3432,140 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F5F2ED] text-[#1A1A1A] font-sans p-8">
+    <div className="min-h-screen bg-[#f3f6f8] text-[#1b3040] font-sans">
       {/* --- Header: logo/home link, step indicator, user info, admin/logout/rules buttons, and (only
           during the review step) the Mark Complete / Start New / Export Errors / Upload Corrections /
           Export Clean CSV action bar (handleMarkAsComplete, handleStartNew, handleExportErrors,
           handleUploadCorrections, handleExport — all defined above). --- */}
-      <header className="max-w-[98vw] mx-auto mb-12 flex justify-between items-end">
-        <div>
-          <motion.h1
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            whileHover={{ scale: 1.02, color: "#4f46e5" }}
+      <header className="sticky top-0 z-50 bg-white border-b border-[#e0e8ef] shadow-[0_1px_4px_rgba(27,48,64,0.08)]">
+        <div className="max-w-[98vw] mx-auto h-16 px-8 flex items-center justify-between gap-8">
+          {/* Brand */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
-            className="text-5xl font-serif font-light tracking-tight mb-2 cursor-pointer relative z-50"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              console.log('[Logo] Redirecting to Home');
-              goHome();
-            }}
+            className="flex items-center gap-3 cursor-pointer flex-shrink-0"
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); goHome(); }}
           >
-            Vino<span className="italic font-medium">Druid</span>
-          </motion.h1>
-          <div className="flex items-center gap-3">
-            <p className="text-sm uppercase tracking-widest text-black/50">Wine Data Onboarding</p>
-            <div className="h-1 w-1 rounded-full bg-black/20" />
-            <p className="text-xs font-bold text-black/30 uppercase tracking-tighter">
-              Step {step === 'upload' ? '1' : step === 'map' ? '2' : step === 'manual' ? '2' : '3'} of {step === 'manual' ? '2' : '3'}
-            </p>
-          </div>
-        </div>
-        
-        <div className="flex items-center gap-4">
-          {currentUser && (
-            <div className="text-right">
-              <p className="text-sm font-medium text-[#1A1A1A]">Hi {currentUser.forename || currentUser.display_name}</p>
-              <p className="text-xs text-black/40 uppercase tracking-wider">{currentUser.organisation_name}</p>
-            </div>
-          )}
-          {currentUser?.user_access === 'admin' && (
-            <button
-              onClick={() => setShowAdmin(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg border border-gray-200 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors"
-            >
-              Admin
-            </button>
-          )}
-          <button
-            onClick={() => logout({ logoutParams: { returnTo: window.location.origin } })}
-            className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg border border-gray-200 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors"
-          >
-            Log out
-          </button>
-          <button
-            onClick={() => setIsRulesModalOpen(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg border border-gray-200 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors"
-          >
-            <HelpCircle className="w-4 h-4" />
-            Validation Rules
-          </button>
+            <span className="text-xl font-serif tracking-tight text-[#1b3040]">
+              Vino<span className="italic font-medium text-[#2d97af]">Druid</span>
+            </span>
+            <span className="hidden sm:block text-[10px] font-bold uppercase tracking-widest text-[#96adb8]">Wine Onboarding</span>
+          </motion.div>
 
-          {step === 'review' && (
-          <div className="flex gap-4">
-            {processedData.every(r => r.status === 'green') && Object.keys(manualEditsMap).length === 0 && Object.keys(autoFixedMap).length === 0 && (
+          {/* Step pips */}
+          <div className="flex items-center gap-1">
+            {(['Upload', 'Map', 'Review'] as const).map((label, idx) => {
+              const n = idx + 1;
+              const current = step === 'upload' ? 1 : (step === 'map' || step === 'manual') ? 2 : 3;
+              const done = n < current;
+              const active = n === current;
+              return (
+                <React.Fragment key={n}>
+                  <div className="flex flex-col items-center gap-0.5">
+                    <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold border-2 transition-all ${
+                      done ? 'bg-[#3d8a5a] border-[#3d8a5a] text-white' :
+                      active ? 'bg-[#2d97af] border-[#2d97af] text-white' :
+                      'bg-white border-[#e0e8ef] text-[#96adb8]'
+                    }`}>
+                      {done ? <CheckCircle2 size={12} /> : n}
+                    </div>
+                    <span className={`text-[9px] font-semibold hidden sm:block ${active ? 'text-[#1b3040]' : done ? 'text-[#3d8a5a]' : 'text-[#96adb8]'}`}>{label}</span>
+                  </div>
+                  {idx < 2 && <div className={`w-8 h-0.5 mb-3 ${done ? 'bg-[#2d97af]' : 'bg-[#e0e8ef]'}`} />}
+                </React.Fragment>
+              );
+            })}
+          </div>
+
+          {/* Right: user + actions */}
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {currentUser && (
+              <div className="text-right mr-2">
+                <p className="text-sm font-semibold text-[#1b3040]">{currentUser.forename || currentUser.display_name}</p>
+                <p className="text-[10px] text-[#96adb8] uppercase tracking-wider">{currentUser.organisation_name}</p>
+              </div>
+            )}
+            {currentUser?.user_access === 'admin' && (
               <button
-                onClick={handleMarkAsComplete}
-                className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider bg-emerald-600 text-white px-6 py-2 rounded-full shadow-lg hover:bg-emerald-700 transition-all flex-shrink-0"
+                onClick={() => setShowAdmin(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white rounded-lg border border-[#e0e8ef] text-xs font-medium text-[#5a7080] hover:border-[#2d97af] hover:text-[#2d97af] transition-colors"
               >
-                <CheckCircle2 size={14} />
-                Mark as Complete
+                Admin
               </button>
             )}
-            <button 
-              onClick={handleStartNew}
-              className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider bg-white px-4 py-2 rounded-full border border-black/5 shadow-sm hover:bg-black/[0.02] transition-colors"
-            >
-              <RefreshCcw size={14} />
-              Start New
-            </button>
-            {showOnlyErrors && processedData.some(r => r.status === 'red') && (
-              <>
-                <input
-                  type="file"
-                  accept=".csv"
-                  ref={correctionsInputRef}
-                  onChange={handleUploadCorrections}
-                  className="hidden"
-                />
-                <button
-                  onClick={handleExportErrors}
-                  className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider bg-rose-600 text-white px-6 py-2 rounded-full shadow-lg hover:scale-105 transition-all"
-                >
-                  <Download size={14} />
-                  Export Errors ({processedData.filter(r => r.status === 'red').length})
-                </button>
-                <button
-                  onClick={() => correctionsInputRef.current?.click()}
-                  className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider bg-white text-rose-600 border border-rose-200 px-6 py-2 rounded-full shadow-sm hover:bg-rose-50 transition-all"
-                >
-                  <Upload size={14} />
-                  Upload Corrections
-                </button>
-              </>
-            )}
             <button
-              onClick={handleExport}
-              className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider bg-black text-white px-6 py-2 rounded-full shadow-lg hover:scale-105 transition-all"
+              onClick={() => logout({ logoutParams: { returnTo: window.location.origin } })}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white rounded-lg border border-[#e0e8ef] text-xs font-medium text-[#5a7080] hover:border-[#2d97af] hover:text-[#2d97af] transition-colors"
             >
-              <Download size={14} />
-              Export Clean CSV
+              Log out
             </button>
+            <button
+              onClick={() => setIsRulesModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2d97af] rounded-lg text-xs font-medium text-white hover:bg-[#1b7d94] transition-colors"
+            >
+              <HelpCircle className="w-3.5 h-3.5" />
+              Rules
+            </button>
+
+            {step === 'review' && (
+              <div className="flex gap-2 ml-2">
+                {processedData.every(r => r.status === 'green') && Object.keys(manualEditsMap).length === 0 && Object.keys(autoFixedMap).length === 0 && (
+                  <button
+                    onClick={handleMarkAsComplete}
+                    className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider bg-[#3d8a5a] text-white px-4 py-1.5 rounded-full shadow-sm hover:bg-[#2d7a4a] transition-all flex-shrink-0"
+                  >
+                    <CheckCircle2 size={13} />
+                    Mark Complete
+                  </button>
+                )}
+                <button
+                  onClick={handleStartNew}
+                  className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider bg-white px-3 py-1.5 rounded-full border border-[#e0e8ef] shadow-sm hover:border-[#2d97af] transition-colors"
+                >
+                  <RefreshCcw size={13} />
+                  Start New
+                </button>
+                {showOnlyErrors && processedData.some(r => r.status === 'red') && (
+                  <>
+                    <input
+                      type="file"
+                      accept=".csv"
+                      ref={correctionsInputRef}
+                      onChange={handleUploadCorrections}
+                      className="hidden"
+                    />
+                    <button
+                      onClick={handleExportErrors}
+                      className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider bg-rose-600 text-white px-4 py-1.5 rounded-full shadow-sm hover:bg-rose-700 transition-all"
+                    >
+                      <Download size={13} />
+                      Export Errors ({processedData.filter(r => r.status === 'red').length})
+                    </button>
+                    <button
+                      onClick={() => correctionsInputRef.current?.click()}
+                      className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider bg-white text-rose-600 border border-rose-200 px-4 py-1.5 rounded-full shadow-sm hover:bg-rose-50 transition-all"
+                    >
+                      <Upload size={13} />
+                      Upload Fixes
+                    </button>
+                  </>
+                )}
+                <button
+                  onClick={handleExport}
+                  className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider bg-[#2d97af] text-white px-4 py-1.5 rounded-full shadow-sm hover:bg-[#1b7d94] transition-all"
+                >
+                  <Download size={13} />
+                  Export CSV
+                </button>
+              </div>
+            )}
           </div>
-        )}
         </div>
       </header>
 
-      <main className="max-w-[98vw] mx-auto min-h-[50vh] flex flex-col justify-center">
+      <main className="max-w-[98vw] mx-auto min-h-[calc(100vh-4rem)] flex flex-col justify-center px-8 py-10">
         <AnimatePresence mode="wait">
           {/* ===================== UPLOAD STEP ===================== */}
           {/* Data-type picker pills (renderDataTypeButton above) + either the FileUploader/manual-entry
@@ -3560,7 +3577,7 @@ export default function App() {
               <div className="space-y-10 max-w-4xl mx-auto flex flex-col items-center">
                 {/* Row 1: master listings & clients */}
                 <div className="flex flex-col items-center gap-3 w-full animate-in fade-in slide-in-from-bottom-4 duration-500">
-                  <span className="text-[10px] uppercase font-sans tracking-[0.2em] text-[#1A1A1A]/30 font-bold mb-1">
+                  <span className="text-[10px] uppercase font-sans tracking-[0.2em] text-[#1b3040]/40 font-semibold mb-1">
                     Master Files & Contacts
                   </span>
                   <div className="flex flex-wrap justify-center gap-4">
@@ -3569,11 +3586,11 @@ export default function App() {
                 </div>
 
                 {/* Subdued separator line */}
-                <div className="h-[1px] w-24 bg-[#1A1A1A]/10 my-1"></div>
+                <div className="h-[1px] w-24 bg-[#e0e8ef] my-1"></div>
 
                 {/* Row 2: transactional & stock data */}
                 <div className="flex flex-col items-center gap-3 w-full animate-in fade-in slide-in-from-bottom-4 duration-700">
-                  <span className="text-[10px] uppercase font-sans tracking-[0.2em] text-[#1A1A1A]/30 font-bold mb-1">
+                  <span className="text-[10px] uppercase font-sans tracking-[0.2em] text-[#1b3040]/40 font-semibold mb-1">
                     Transactions & Stock
                   </span>
                   <div className="flex flex-wrap justify-center gap-4">
@@ -3585,12 +3602,12 @@ export default function App() {
                 {!(getActiveSessionForType(dataType) || completedTasks[dataType]) && (
                   <button
                     onClick={handleDownloadTemplate}
-                    className="group flex items-center gap-3 px-5 py-3 bg-white border border-black/5 rounded-xl shadow-sm hover:border-black/20 hover:shadow-md transition-all"
+                    className="group flex items-center gap-3 px-5 py-3 bg-white border border-[#e0e8ef] rounded-xl shadow-sm hover:border-[#2d97af] hover:shadow-md transition-all"
                   >
-                    <div className="p-2 bg-black/5 rounded-lg group-hover:bg-black/10 transition-colors">
-                      <Download size={16} className="text-black/60 group-hover:text-black" />
+                    <div className="p-2 bg-[#eaf5f9] rounded-lg group-hover:bg-[#d5eef5] transition-colors">
+                      <Download size={16} className="text-[#2d97af]" />
                     </div>
-                    <p className="text-xs font-bold uppercase tracking-wider text-black/60 group-hover:text-black">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-[#5a7080] group-hover:text-[#2d97af]">
                       Download {SCHEMAS[dataType].label} Template
                     </p>
                   </button>
@@ -3657,19 +3674,19 @@ export default function App() {
                 <div className="space-y-4">
                   <FileUploader onUpload={handleUpload} />
                   <div className="max-w-2xl mx-auto flex items-center gap-4">
-                    <div className="flex-1 h-px bg-black/10" />
-                    <span className="text-xs text-black/30 uppercase tracking-widest">or</span>
-                    <div className="flex-1 h-px bg-black/10" />
+                    <div className="flex-1 h-px bg-[#e0e8ef]" />
+                    <span className="text-xs text-[#96adb8] uppercase tracking-widest">or</span>
+                    <div className="flex-1 h-px bg-[#e0e8ef]" />
                   </div>
                   <div className="max-w-2xl mx-auto flex justify-center">
                     <button
                       onClick={handleOpenManualEntry}
-                      className="group flex items-center gap-3 px-5 py-3 bg-white border border-black/5 rounded-xl shadow-sm hover:border-black/20 hover:shadow-md transition-all"
+                      className="group flex items-center gap-3 px-5 py-3 bg-white border border-[#e0e8ef] rounded-xl shadow-sm hover:border-[#2d97af] hover:shadow-md transition-all"
                     >
-                      <div className="p-2 bg-black/5 rounded-lg group-hover:bg-black/10 transition-colors">
-                        <Plus size={16} className="text-black/60 group-hover:text-black" />
+                      <div className="p-2 bg-[#eaf5f9] rounded-lg group-hover:bg-[#d5eef5] transition-colors">
+                        <Plus size={16} className="text-[#2d97af]" />
                       </div>
-                      <p className="text-xs font-bold uppercase tracking-wider text-black/60 group-hover:text-black">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-[#5a7080] group-hover:text-[#2d97af]">
                         Start from Empty
                       </p>
                     </button>
