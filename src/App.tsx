@@ -1,20 +1,22 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useAuth0 } from '@auth0/auth0-react';
-import ExcelJS from 'exceljs';
 import { normalizeBottleSize, normalizeVintage, normalizeCurrency, normalizeDate, normalizeCountry } from './utils/normalization';
 import { WINE_TYPES, WINE_SUBTYPES, TYPE_TO_SUBTYPE, findClosestMatch } from './utils/wineValidation';
 import { CheckCircle2, AlertCircle, HelpCircle, ArrowRight, Sparkles, RefreshCcw, RotateCcw, RotateCw, Trash2, Download, Upload, Filter, LayoutGrid, Copy, Check, Edit2, X, Calculator, Play, Plus } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { FileUploader } from './components/FileUploader';
-import { SchemaMapper } from './components/SchemaMapper';
 import { RulesModal } from './components/RulesModal';
 import { RowEditor } from './components/RowEditor';
 import { CellarAutocomplete } from './components/CellarAutocomplete';
 import { DuplicateComparisonModal } from './components/DuplicateComparisonModal';
 import { AddLocationModal } from './components/AddLocationModal';
 import { AiFixReviewModal } from './components/AiFixReviewModal';
-import { AdminPanel } from './components/AdminPanel';
-import { ManualEntryGrid } from './components/ManualEntryGrid';
+
+// Lazy-loaded: only pulled in when the user actually reaches that step or panel.
+// ExcelJS is imported dynamically inside handleDownloadTemplate for the same reason.
+const AdminPanel     = React.lazy(() => import('./components/AdminPanel').then(m => ({ default: m.AdminPanel })));
+const ManualEntryGrid = React.lazy(() => import('./components/ManualEntryGrid').then(m => ({ default: m.ManualEntryGrid })));
+const SchemaMapper   = React.lazy(() => import('./components/SchemaMapper').then(m => ({ default: m.SchemaMapper })));
 
 // --- Types ---
 
@@ -3099,8 +3101,9 @@ export default function App() {
   // Generates and downloads a blank Excel template for the current data type, using SCHEMAS for column
   // headers and highlighting mandatory fields in orange.
   const handleDownloadTemplate = async () => {
+    const ExcelJS = (await import('exceljs')).default;
     const fields = SCHEMAS[dataType].fields;
-    
+
     // Create workbook and worksheet
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Template');
@@ -3405,11 +3408,13 @@ export default function App() {
   // Admin panel short-circuit: renders instead of the wizard when showAdmin is toggled on from the header.
   if (showAdmin && currentUser) {
     return (
-      <AdminPanel
-        onBack={() => setShowAdmin(false)}
-        currentUserForename={currentUser.forename || currentUser.display_name}
-        currentOrgName={currentUser.organisation_name}
-      />
+      <React.Suspense fallback={null}>
+        <AdminPanel
+          onBack={() => setShowAdmin(false)}
+          currentUserForename={currentUser.forename || currentUser.display_name}
+          currentOrgName={currentUser.organisation_name}
+        />
+      </React.Suspense>
     );
   }
 
@@ -3511,7 +3516,7 @@ export default function App() {
 
             {step === 'review' && (
               <div className="flex gap-2 ml-2">
-                {processedData.every(r => r.status === 'green') && Object.keys(manualEditsMap).length === 0 && Object.keys(autoFixedMap).length === 0 && (
+                {processedData.every(r => r.status === 'green') && (
                   <button
                     onClick={handleMarkAsComplete}
                     className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider bg-[#3d8a5a] text-white px-4 py-1.5 rounded-full shadow-sm hover:bg-[#2d7a4a] transition-all flex-shrink-0"
@@ -3786,11 +3791,13 @@ export default function App() {
                   Cancel
                 </button>
               </div>
-              <ManualEntryGrid
-                fields={getCurrentSchema().fields.filter(f => pickerSelectedKeys.has(f.key))}
-                onSubmit={handleManualSubmit}
-                onCancel={goHome}
-              />
+              <React.Suspense fallback={null}>
+                <ManualEntryGrid
+                  fields={getCurrentSchema().fields.filter(f => pickerSelectedKeys.has(f.key))}
+                  onSubmit={handleManualSubmit}
+                  onCancel={goHome}
+                />
+              </React.Suspense>
             </div>
           )}
 
@@ -3799,14 +3806,16 @@ export default function App() {
               to schema fields (getCurrentSchema() above). onComplete calls handleMappingComplete above,
               which runs processData()/handleCalculationSmartFix() and advances to 'review'. */}
           {step === 'map' && (
-            <SchemaMapper
-              headers={headers}
-              fields={getCurrentSchema().fields}
-              onComplete={handleMappingComplete}
-              onCancel={goHome}
-              requireEitherOr={(['inventory', 'client_reserves', 'sales_orders', 'purchase_orders'] as DataType[]).includes(dataType) ? ['lwin7', 'listing_wine_name'] : undefined}
-              previewRows={rawData.slice(0, 4)}
-            />
+            <React.Suspense fallback={null}>
+              <SchemaMapper
+                headers={headers}
+                fields={getCurrentSchema().fields}
+                onComplete={handleMappingComplete}
+                onCancel={goHome}
+                requireEitherOr={(['inventory', 'client_reserves', 'sales_orders', 'purchase_orders'] as DataType[]).includes(dataType) ? ['lwin7', 'listing_wine_name'] : undefined}
+                previewRows={rawData.slice(0, 4)}
+              />
+            </React.Suspense>
           )}
 
           {/* ===================== REVIEW STEP ===================== */}

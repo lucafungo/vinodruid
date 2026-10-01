@@ -4,6 +4,7 @@
 import os
 import json
 import ssl
+import time
 import urllib.request as _urllib
 from contextlib import contextmanager
 from typing import Any, Optional
@@ -13,20 +14,70 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from jose import jwt as _jwt
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response as StarletteResponse
 
 
 load_dotenv(override=True)
 
-app = FastAPI()
+# In production, disable FastAPI's auto-generated /docs, /redoc and /openapi.json —
+# they expose the full API schema (all routes, params, response shapes) to anyone
+# without requiring a token. Fine for local dev; must be off before going live.
+_is_production = os.getenv("ENVIRONMENT", "development").lower() == "production"
+app = FastAPI(
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
+    openapi_url=None if _is_production else "/openapi.json",
+)
 
-# Wide-open CORS: frontend runs on a different origin (Vite dev server) and
-# this is an internal tool, so all origins/methods/headers are allowed.
+# CORS: locked to the specific frontend origin(s) defined in CORS_ORIGINS.
+# In local dev the Vite server can run on 5173-5175; in production set this
+# to the Azure Static Web App domain only. Never use "*" in production.
+_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://localhost:5174,http://localhost:5175",
+    ).split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+
+# Security headers on every response: prevent MIME sniffing, clickjacking,
+# and referrer leakage. HSTS is omitted here — Azure Front Door / App Service
+# enforces HTTPS and sends HSTS at the TLS termination layer.
+class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        response.headers["server"] = "vinoDruid"  # mask uvicorn fingerprint
+        return response
+
+app.add_middleware(_SecurityHeadersMiddleware)
+
+
+# Request body size cap: rejects payloads over 50 MB before they hit any
+# endpoint. Protects against memory exhaustion from oversized JSON uploads.
+_MAX_BODY_BYTES = int(os.getenv("MAX_BODY_MB", "50")) * 1024 * 1024
+
+class _MaxBodySizeMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        if request.method in ("POST", "PUT", "PATCH"):
+            cl = request.headers.get("content-length")
+            if cl and int(cl) > _MAX_BODY_BYTES:
+                return StarletteResponse("Request body too large.", status_code=413)
+        return await call_next(request)
+
+app.add_middleware(_MaxBodySizeMiddleware)
 
 # SQL Server connection settings (local SQL Server Express instance by default)
 SERVER = os.getenv("SQL_SERVER", r"WOLUCA\SQLEXPRESS")
@@ -40,7 +91,12 @@ _AUTH0_DOMAIN = os.getenv("AUTH0_DOMAIN", "")
 _AUTH0_AUDIENCE = os.getenv("AUTH0_AUDIENCE", "")
 # When true, skip Auth0 entirely and use a fixed dev org/user (local dev only)
 _SKIP_AUTH = os.getenv("SKIP_AUTH", "false").lower() == "true"
+# Guard: SKIP_AUTH must never be enabled in production
+if _SKIP_AUTH and os.getenv("ENVIRONMENT", "development").lower() == "production":
+    raise RuntimeError("SKIP_AUTH=true is not allowed in production. Unset it in Azure App Service configuration.")
 _jwks_cache: dict = {}
+_jwks_cache_time: float = 0.0
+_JWKS_TTL_SECONDS = 86400  # refresh Auth0 signing keys every 24 hours
 
 # Auth0 Management API credentials: used only to auto-provision new users
 # (see _get_mgmt_token / _provision_auth0_user, called from admin_create_user)
@@ -52,15 +108,20 @@ _mgmt_token_cache: dict = {}
 # Fetches (and caches in-memory) Auth0's public signing keys (JWKS), used by
 # _verify_token to check JWT signatures. Called indirectly via _resolve_user.
 def _get_jwks() -> dict:
-    global _jwks_cache
-    if not _jwks_cache and _AUTH0_DOMAIN:
+    global _jwks_cache, _jwks_cache_time
+    stale = time.time() - _jwks_cache_time > _JWKS_TTL_SECONDS
+    if (not _jwks_cache or stale) and _AUTH0_DOMAIN:
         try:
             import certifi
             ctx = ssl.create_default_context(cafile=certifi.where())
             with _urllib.urlopen(f"https://{_AUTH0_DOMAIN}/.well-known/jwks.json", timeout=10, context=ctx) as resp:
                 _jwks_cache = json.loads(resp.read())
+                _jwks_cache_time = time.time()
         except Exception as exc:
-            raise HTTPException(status_code=503, detail=f"Could not reach Auth0 JWKS endpoint: {exc}")
+            if _jwks_cache:
+                pass  # serve stale cache rather than breaking all auth
+            else:
+                raise HTTPException(status_code=503, detail=f"Could not reach Auth0 JWKS endpoint: {exc}")
     return _jwks_cache
 
 
@@ -208,7 +269,7 @@ def _resolve_user(request: Request) -> tuple:
         user = row_as_dict(cursor)
 
     if not user:
-        raise HTTPException(status_code=403, detail=f"No active user found for {email}.")
+        raise HTTPException(status_code=403, detail="Access denied.")
 
     result = (user["organisation_id"], user["user_id"])
     request.state._vd_user = result
@@ -550,10 +611,7 @@ def get_me(request: Request):
         )
         org = row_as_dict(cursor)
         if not org:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Organisation {org_id} not found or is disabled."
-            )
+            raise HTTPException(status_code=403, detail="Access denied.")
 
         cursor = conn.execute(
             "SELECT user_id, display_name, forename, surname, email, user_access, organisation_id "
@@ -562,18 +620,12 @@ def get_me(request: Request):
         )
         user = row_as_dict(cursor)
         if not user:
-            raise HTTPException(
-                status_code=403,
-                detail=f"User {user_id} not found or is disabled."
-            )
+            raise HTTPException(status_code=403, detail="Access denied.")
 
         # Defense in depth: org_id/user_id both come from the same _resolve_user
         # lookup so this should never trigger, but guards against future misuse
         if user["organisation_id"] != org_id:
-            raise HTTPException(
-                status_code=403,
-                detail=f"User {user_id} does not belong to organisation {org_id}."
-            )
+            raise HTTPException(status_code=403, detail="Access denied.")
 
         return {
             "user_id": user["user_id"],
@@ -671,11 +723,15 @@ def admin_list_users(request: Request):
 # POST /api/admin/users - creates a user record and, if Auth0 management
 # credentials are configured, also provisions the user in Auth0 and returns a
 # password-setup URL (via _provision_auth0_user) so they can log in.
+_VALID_ACCESS_LEVELS = {"user", "admin"}
+
 @app.post("/api/admin/users")
 async def admin_create_user(request: Request):
     _require_admin(request)
     body = await request.json()
     email = body.get("email") or None
+    if body.get("user_access", "user") not in _VALID_ACCESS_LEVELS:
+        raise HTTPException(status_code=400, detail=f"Invalid user_access. Must be one of: {', '.join(_VALID_ACCESS_LEVELS)}")
     setup_url = None
     auth0_error = None
     if email and _AUTH0_MGMT_CLIENT_ID:
@@ -703,6 +759,8 @@ async def admin_create_user(request: Request):
 async def admin_update_user(user_id: int, request: Request):
     _require_admin(request)
     body = await request.json()
+    if body.get("user_access") and body.get("user_access") not in _VALID_ACCESS_LEVELS:
+        raise HTTPException(status_code=400, detail=f"Invalid user_access. Must be one of: {', '.join(_VALID_ACCESS_LEVELS)}")
     with get_db() as conn:
         conn.execute(
             "UPDATE users SET organisation_id=?, forename=?, surname=?, display_name=?, alias=?, email=?, "
@@ -1077,7 +1135,8 @@ def clear_master_clients(request: Request):
 # GET /api/master/regions - returns all wine regions (global, not org-scoped)
 # with display-friendly capitalized keys, for the frontend's region lookup/picker
 @app.get("/api/master/regions")
-def get_regions():
+def get_regions(request: Request):
+    get_org_id(request)  # require a valid token; region data is not sensitive but endpoints should not be open
     with get_db() as conn:
         cursor = conn.execute(
             "SELECT region_name, type, parent, appellation, classification, designation FROM regions ORDER BY region_name"
@@ -1089,7 +1148,8 @@ def get_regions():
 # POST /api/system/ai-fix - placeholder for an AI-assisted data-cleaning
 # feature; currently always returns 503 since it's not wired up to Claude yet
 @app.post("/api/system/ai-fix")
-async def ai_fix():
+async def ai_fix(request: Request):
+    get_org_id(request)  # require a valid token before even returning 503
     raise HTTPException(
         status_code=503,
         detail="AI data cleaning is not yet configured. Set ANTHROPIC_API_KEY to enable this feature."

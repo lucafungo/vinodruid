@@ -33,3 +33,6 @@ Thumbs.db
 # Claude Code — local tooling, not part of the project
 .claude/
 .playwright-mcp/
+
+# Security audit — internal document, not for the repo
+SECURITY_AUDIT.md
