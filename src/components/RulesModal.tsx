@@ -138,13 +138,13 @@ export const RulesModal: React.FC<RulesModalProps> = ({ isOpen, onClose, dataTyp
                   <>
                     <RuleItem
                       title="LWIN (Liv-ex Wine Identification Number)"
-                      description="Mandatory. If LWIN is not provided, you must provide: Producer, Wine Name, Vintage, Country, Region, Type, and Sub-Type. If a valid LWIN is provided, it identifies the wine on its own — Wine Name, Producer, Vintage, Country, Region, Type, and Sub-Type are not individually checked, even if they look wrong."
+                      description="Mandatory. If LWIN is not provided, you must provide: Producer, Wine Name, Vintage, Country, Region, and Type. Sub-Type is optional. If a valid LWIN is provided, it identifies the wine on its own — Wine Name, Producer, Vintage, Country, Region, Type, and Sub-Type are not individually checked, even if they look wrong."
                       type="critical"
                     />
                     
                     <RuleItem
                       title="Wine Name"
-                      description="Must not be abbreviated. Accents (like é, ñ, ü) and apostrophes are allowed, but other special characters should be removed. Not checked if a valid LWIN is provided."
+                      description="Must not be abbreviated. All characters are accepted. Not checked if a valid LWIN is provided."
                     />
 
                     <RuleItem

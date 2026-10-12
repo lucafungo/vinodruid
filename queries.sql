@@ -206,6 +206,19 @@ SELECT region_name FROM regions WHERE type = 'Country' ORDER BY region_name;
 SELECT region_name, type FROM regions WHERE parent = 'France' ORDER BY type, region_name;
 
 
+SELECT * FROM regions WHERE region_name LIKE '%Gevrey%';
+
+
+-- 1. Rename Swiss Jura
+UPDATE regions SET region_name = 'Jura (Switzerland)'
+WHERE LOWER(region_name) = 'jura' AND LOWER(parent) = 'german swiss';
+
+-- 2. Replace Arbois with a clean entry pointing directly to France
+DELETE FROM regions WHERE LOWER(region_name) = 'arbois';
+INSERT INTO regions (region_name, type, parent, appellation, classification, designation)
+VALUES ('Arbois', 'Region', 'France', '', '', '');
+
+
 -- =============================================================================
 -- MULTI-TENANCY ISOLATION TEST
 -- =============================================================================
