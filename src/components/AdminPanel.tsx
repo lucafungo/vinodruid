@@ -283,7 +283,7 @@ export function AdminPanel({ onBack, currentUserForename, currentOrgName }: Prop
       {/* Sidebar */}
       <aside className="w-44 flex-shrink-0 border-r border-gray-200 p-3 flex flex-col">
         <div className="mb-4 pb-3 border-b border-gray-200">
-          <div className="font-semibold text-sm">vinoDruid</div>
+          <div className="font-semibold text-sm">Druid</div>
           <div className="text-xs text-gray-400 uppercase tracking-wider mt-0.5">Admin</div>
         </div>
 

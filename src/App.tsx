@@ -3182,6 +3182,55 @@ export default function App() {
       }
     }
 
+    // LWIN conflict detection: for inventory and client_reserves, if two rows share the same LWIN7
+    // but have conflicting non-empty values in descriptive fields, both rows are flagged red.
+    // A field only counts as a conflict when BOTH rows have a non-empty value that disagrees —
+    // a blank field on one side is not a conflict (LWIN rows often leave descriptive fields empty).
+    if (dataType === 'inventory' || dataType === 'client_reserves') {
+      const LWIN_CONFLICT_FIELDS: { key: string; label: string }[] = [
+        { key: 'listing_wine_name', label: 'Wine Name' },
+        { key: 'display_wine_name', label: 'Display Wine Name' },
+        { key: 'producer', label: 'Producer' },
+        { key: 'country', label: 'Country' },
+        { key: 'region', label: 'Region' },
+        { key: 'sub_region', label: 'Sub Region' },
+      ];
+
+      // Group rows by their lwin7 value
+      const lwinGroups = new Map<string, typeof processed>();
+      processed.forEach(row => {
+        const lwin = String(row['lwin7'] || '').trim();
+        if (!lwin) return;
+        if (!lwinGroups.has(lwin)) lwinGroups.set(lwin, []);
+        lwinGroups.get(lwin)!.push(row);
+      });
+
+      lwinGroups.forEach(rows => {
+        if (rows.length < 2) return;
+
+        const conflictLabels: string[] = [];
+        LWIN_CONFLICT_FIELDS.forEach(({ key, label }) => {
+          // Gather distinct non-empty values across the group (case-insensitive)
+          const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+          const seen = new Set<string>();
+          rows.forEach(r => {
+            const v = normalize(String(r[key] || ''));
+            if (v) seen.add(v);
+          });
+          if (seen.size > 1) conflictLabels.push(label);
+        });
+
+        if (conflictLabels.length === 0) return;
+
+        const msg = `LWIN conflict: this LWIN is shared with another row that has different ${conflictLabels.join(', ')}. Verify the LWIN is correct and fix or remove the conflicting row.`;
+        rows.forEach(row => {
+          row.status = 'red';
+          row.errors.push(msg);
+          if (!row.fieldErrors.includes('lwin7')) row.fieldErrors.push('lwin7');
+        });
+      });
+    }
+
     setProcessedData(processed);
     return processed;
   };
@@ -3522,7 +3571,7 @@ export default function App() {
           <div className="w-12 h-12 rounded-full bg-rose-100 flex items-center justify-center mx-auto mb-4">
             <span className="text-rose-600 text-xl">!</span>
           </div>
-          <h2 className="text-lg font-semibold text-[#1A1A1A] mb-2">Cannot start vinoDruid</h2>
+          <h2 className="text-lg font-semibold text-[#1A1A1A] mb-2">Cannot start Druid</h2>
           <p className="text-sm text-rose-700 bg-rose-50 rounded-lg px-4 py-3 mb-4 text-left">{authError}</p>
           <p className="text-xs text-black/40">Update your <code className="font-mono bg-black/5 px-1 rounded">.env</code> file and restart the server.</p>
         </div>
@@ -3548,7 +3597,7 @@ export default function App() {
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); goHome(); }}
           >
             <span className="text-xl font-serif tracking-tight text-[#1b3040]">
-              Vino<span className="italic font-medium text-[#2d97af]">Druid</span>
+              <span className="italic font-medium text-[#2d97af]">Druid</span>
             </span>
             <span className="hidden sm:block text-[10px] font-bold uppercase tracking-widest text-[#96adb8]">Wine Onboarding</span>
           </motion.div>
@@ -4830,7 +4879,7 @@ export default function App() {
       </AnimatePresence>
 
       <footer className="max-w-[98vw] mx-auto mt-20 pt-8 border-t border-black/10 flex justify-between items-center text-[10px] uppercase tracking-[0.2em] text-black/30">
-        <div>© 2026 vinoDruid</div>
+        <div>© 2026 Druid</div>
       </footer>
     </div>
   );
