@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+﻿import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useAuth0 } from '@auth0/auth0-react';
 import { normalizeBottleSize, normalizeVintage, normalizeCurrency, normalizeDate, normalizeCountry } from './utils/normalization';
 import { WINE_TYPES, WINE_SUBTYPES, TYPE_TO_SUBTYPE, findClosestMatch } from './utils/wineValidation';
@@ -527,6 +527,7 @@ export default function App() {
   
   // UI state
   const [showOnlyErrors, setShowOnlyErrors] = useState(false);
+  const [showOnlyCorrect, setShowOnlyCorrect] = useState(false);
   // Pagination for the review table — without this, a large file renders every row as real DOM at
   // once (confirmed to bloat to 100k+ DOM nodes for a 5,000-row file), which is what made scrolling/
   // editing sluggish even after the processData chunking fix stopped the upload itself from freezing.
@@ -541,6 +542,11 @@ export default function App() {
     const value = row ? row[fieldKey] : null;
     setEditStartingValue(value === null || value === undefined ? '' : String(value));
     setEditingCell({ rowId, fieldKey });
+    // After React renders the editor, scroll it into view (covers both vertical and horizontal scroll)
+    requestAnimationFrame(() => {
+      const cell = document.querySelector(`[data-cell="${rowId}-${fieldKey}"]`);
+      cell?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    });
   };
   const [comparingDuplicate, setComparingDuplicate] = useState<{ row1: number, row2: number } | null>(null);
   const [reviewQueueType, setReviewQueueType] = useState<'duplicate' | 'price' | null>(null);
@@ -872,6 +878,9 @@ export default function App() {
     rowIds.forEach(id => {
       const rawRow = { ...newData[id] };
       rawRow[targetKey] = newValue;
+      // Mirror handleRowUpdate: also write to the schema field key so getValue Priority 1 picks
+      // it up (critical when targetKey is a __const__ sentinel and Priority 3 ignores rawData).
+      if (targetKey !== field) rawRow[field] = newValue;
       newData[id] = rawRow;
     });
 
@@ -901,7 +910,7 @@ export default function App() {
     parseInt(localStorage.getItem('_vd_org_id') ?? '1', 10)
   );
   const completedStorageKey = `completed_tasks_org_${orgId}`;
-  const [completedTasks, setCompletedTasks] = useState<Record<string, { data: any[], fileName: string, completedAt: string }>>(() => {
+  const [completedTasks, setCompletedTasks] = useState<Record<string, { data?: any[], fileName: string, completedAt: string }>>(() => {
     const key = `completed_tasks_org_${parseInt(localStorage.getItem('_vd_org_id') ?? '1', 10)}`;
     let raw = localStorage.getItem(key);
     if (!raw) {
@@ -991,28 +1000,31 @@ export default function App() {
     };
 
     setCompletedTasks(newCompleted);
-    localStorage.setItem(completedStorageKey, JSON.stringify(newCompleted));
-    
-    // Update session status in DB
-    if (currentSessionId) {
-      try {
-        await authFetch(`/api/sessions/${currentSessionId}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: 'completed' })
-        });
-        loadSessions(); // Refresh sessions list
-      } catch (error) {
-        console.error("Failed to mark session as completed in DB", error);
-      }
-    }
+    // Only persist metadata (no row data) — serialising thousands of rows exceeds the localStorage
+    // quota and blocks the UI. Row data stays in in-memory state for the current session.
+    try {
+      const metaOnly: Record<string, { fileName: string; completedAt: string }> = {};
+      Object.keys(newCompleted).forEach(t => {
+        metaOnly[t] = { fileName: newCompleted[t].fileName, completedAt: newCompleted[t].completedAt };
+      });
+      localStorage.setItem(completedStorageKey, JSON.stringify(metaOnly));
+    } catch { /* ignore */ }
 
-    // Reset dropdown state
+    // Navigate immediately — don't block on the DB update
     setOpenCompletedDropdown(null);
-    
-    // Optionally redirect to home
     setStep('upload');
     setCurrentSessionId(null);
+
+    // Update session status in DB (fire-and-forget)
+    if (currentSessionId) {
+      authFetch(`/api/sessions/${currentSessionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'completed' })
+      }).then(() => loadSessions()).catch(error => {
+        console.error("Failed to mark session as completed in DB", error);
+      });
+    }
   };
 
   // Removes a data type's "completed" badge/record from the completedTasks map and localStorage.
@@ -1020,7 +1032,13 @@ export default function App() {
     const newCompleted = { ...completedTasks };
     delete newCompleted[type];
     setCompletedTasks(newCompleted);
-    localStorage.setItem(completedStorageKey, JSON.stringify(newCompleted));
+    try {
+      const metaOnly: Record<string, { fileName: string; completedAt: string }> = {};
+      Object.keys(newCompleted).forEach(t => {
+        metaOnly[t] = { fileName: newCompleted[t].fileName, completedAt: newCompleted[t].completedAt };
+      });
+      localStorage.setItem(completedStorageKey, JSON.stringify(metaOnly));
+    } catch { /* ignore */ }
     setOpenCompletedDropdown(null);
   };
 
@@ -1039,7 +1057,13 @@ export default function App() {
     const newCompleted = { ...completedTasks };
     delete newCompleted[type];
     setCompletedTasks(newCompleted);
-    localStorage.setItem(completedStorageKey, JSON.stringify(newCompleted));
+    try {
+      const metaOnly: Record<string, { fileName: string; completedAt: string }> = {};
+      Object.keys(newCompleted).forEach(t => {
+        metaOnly[t] = { fileName: newCompleted[t].fileName, completedAt: newCompleted[t].completedAt };
+      });
+      localStorage.setItem(completedStorageKey, JSON.stringify(metaOnly));
+    } catch { /* ignore */ }
     setOpenCompletedDropdown(null);
     await handleLoadSession(sessionId);
   };
@@ -1095,8 +1119,10 @@ export default function App() {
 
     Object.keys(completedTasks).forEach((type) => {
       const task = completedTasks[type];
+      if (!task.data?.length) return; // data only available in-session; skip if not present
       const schema = SCHEMAS[type as DataType];
-      const csv = rowsToCsv(schema, task.data);
+      const extras = type === 'inventory' ? [{ label: 'customer code', value: () => 'HUB' }] : undefined;
+      const csv = rowsToCsv(schema, task.data, extras);
       const safeName = `${type}_${(task.fileName.split('.')[0] || type)}.csv`;
       zip.file(safeName, csv);
     });
@@ -1110,8 +1136,10 @@ export default function App() {
     const task = completedTasks[type];
     if (!task) return;
 
+    if (!task.data?.length) { alert('Export data is only available within the current session. Please re-import the file to re-export.'); return; }
     const currentSchema = SCHEMAS[type as DataType];
-    downloadCsv(rowsToCsv(currentSchema, task.data), `completed_${task.fileName.split('.')[0] || 'data'}.csv`);
+    const extras = type === 'inventory' ? [{ label: 'customer code', value: () => 'HUB' }] : undefined;
+    downloadCsv(rowsToCsv(currentSchema, task.data, extras), `completed_${task.fileName.split('.')[0] || 'data'}.csv`);
     setOpenCompletedDropdown(null);
   };
 
@@ -1151,7 +1179,10 @@ export default function App() {
 
     const currentSchema = getCurrentSchema();
     const rows = processedData.filter(r => r.status !== 'red'); // Only export valid or reviewable rows
-    downloadCsv(rowsToCsv(currentSchema, rows), `clean_${fileName.split('.')[0] || 'data'}.csv`);
+    const customExtras = Object.keys(mapping)
+      .filter(k => k.startsWith('__custom_col__'))
+      .map(k => ({ label: k.slice(14), value: (row: any) => { const v = String(row[k] ?? ''); return (v.includes(',') || v.includes('"') || v.includes('\n')) ? `"${v.replace(/"/g, '""')}"` : v; } }));
+    downloadCsv(rowsToCsv(currentSchema, rows, customExtras), `clean_${fileName.split('.')[0] || 'data'}.csv`);
 
     // Mark session as completed
     if (currentSessionId) {
@@ -1176,6 +1207,16 @@ export default function App() {
       { label: '__row_id__', value: row => String(row.id) },
     ]);
     downloadCsv(csvContent, `errors_${fileName.split('.')[0] || 'data'}.csv`);
+  };
+
+  const handleExportCorrect = () => {
+    const correctRows = processedData.filter(r => r.status === 'green');
+    if (correctRows.length === 0) return;
+    const currentSchema = getCurrentSchema();
+    const customExtras = Object.keys(mapping)
+      .filter(k => k.startsWith('__custom_col__'))
+      .map(k => ({ label: k.slice(14), value: (row: any) => { const v = String(row[k] ?? ''); return (v.includes(',') || v.includes('"') || v.includes('\n')) ? `"${v.replace(/"/g, '""')}"` : v; } }));
+    downloadCsv(rowsToCsv(currentSchema, correctRows, customExtras), `correct_${fileName.split('.')[0] || 'data'}.csv`);
   };
 
   // Minimal CSV line parser (handles quoted fields and escaped quotes) used by handleUploadCorrections() below.
@@ -1656,11 +1697,20 @@ export default function App() {
       const bulkFixableFields = ['cellar_name', 'account_code', 'producer', 'country', 'region', 'lwin7', 'sub_region', 'vintage', 'type', 'sub_type', 'currency', 'warehouse_location', 'tax_status', 'packaging_type'];
       
       if (oldVal && newVal && String(oldVal).trim() !== String(newVal).trim() && bulkFixableFields.includes(editedFieldKey)) {
-        const otherRowsWithSameVal = processedData.filter(r => 
-          r.id !== updatedRow.id && 
-          String(r[editedFieldKey] || '').trim() === String(oldVal).trim() &&
-          r.status === 'red'
-        );
+        const otherRowsWithSameVal = processedData.filter(r => {
+          if (r.id === updatedRow.id) return false;
+          if (String(r[editedFieldKey] || '').trim() !== String(oldVal).trim()) return false;
+          if (r.status !== 'red') return false;
+          if (!(r.fieldErrors || []).includes(editedFieldKey)) return false;
+          // For region/sub_region: scope to the same country — fixing "Emilia-Romagna wrong for France"
+          // must not bulk-change rows where the same region is wrong for a different country (e.g. Spain).
+          if (editedFieldKey === 'region' || editedFieldKey === 'sub_region') {
+            const fixedCountry = String(updatedRow['country'] || '').trim().toLowerCase();
+            const candidateCountry = String(r['country'] || '').trim().toLowerCase();
+            if (fixedCountry !== candidateCountry) return false;
+          }
+          return true;
+        });
 
         if (otherRowsWithSameVal.length >= 1) {
           setPendingBulkAction({
@@ -1881,12 +1931,13 @@ export default function App() {
   useEffect(() => {
     const filteredCount = processedData.filter(row => {
       if (showOnlyErrors) return row.status === 'red';
+      if (showOnlyCorrect) return row.status === 'green';
       if (showOnlyEdited) return manualEditsMap[row.id] !== undefined;
       return true;
     }).length;
     const totalPages = Math.max(1, Math.ceil(filteredCount / reviewPageSize));
     setReviewPage(p => Math.min(p, totalPages));
-  }, [processedData, showOnlyErrors, showOnlyEdited, manualEditsMap, reviewPageSize]);
+  }, [processedData, showOnlyErrors, showOnlyCorrect, showOnlyEdited, manualEditsMap, reviewPageSize]);
 
   // "Re-validate" button handler: treats the current data as the new baseline (originalRawData), clears
   // manual/auto-fix edit markers (but keeps dismissed duplicate/price warnings), then re-runs
@@ -1980,9 +2031,17 @@ export default function App() {
         if (row[fieldKey] !== undefined && row[fieldKey] !== null && String(row[fieldKey]).trim() !== '') return row[fieldKey];
         // Priority 2: Check virtual
         if (row[`__ai_calculated_${fieldKey}__`]) return row[`__ai_calculated_${fieldKey}__`];
-        // Priority 3: Check mapped
+        // Priority 3: Check mapped header, constant sentinel, or concat sentinel
         const header = activeMapping[fieldKey];
-        return header ? row[header] : undefined;
+        if (!header) return undefined;
+        if (header.startsWith('__const__')) return header.slice(9);
+        if (header.startsWith('__concat__')) {
+          try {
+            const def = JSON.parse(header.slice(10));
+            return (def.cols as string[]).map((c: string) => String(row[c] ?? '')).filter(Boolean).join(def.sep);
+          } catch { return undefined; }
+        }
+        return row[header];
       };
 
       // Helper to set value in raw row using mapping
@@ -2300,23 +2359,31 @@ export default function App() {
 
       // Helper to get mapped value
       const getValue = (key: string) => {
-        // Priority 1: Check the schema key itself (this holds manual edits and AI fixes)
-        // Manual edits MUST win over AI calculations
+        // Priority 1: Manual edits — only trusted when this row actually has a recorded edit for
+        // this field. Without the check, stale rawData writes from a previous edit session survive
+        // a Remap and override the new constant/column mapping even after manualEditsMap is cleared.
         const schemaVal = row[key];
-        if (schemaVal !== undefined && schemaVal !== null && String(schemaVal).trim() !== '') return schemaVal;
+        const wasManuallyEdited = (currentManualEdits[idx] || []).includes(key);
+        if (wasManuallyEdited && schemaVal !== undefined && schemaVal !== null && String(schemaVal).trim() !== '') return schemaVal;
 
         // Priority 2: Check virtual calculation field
         const aiCalcVal = row[`__ai_calculated_${key}__`];
         if (aiCalcVal !== undefined && aiCalcVal !== null && String(aiCalcVal).trim() !== '') return aiCalcVal;
 
-        // Priority 3: Check the mapped original header (or constant value)
+        // Priority 3: Check the mapped original header (constant, concat, or column name)
         const mappedKey = map[key];
         if (mappedKey) {
           if (mappedKey.startsWith('__const__')) return mappedKey.slice(9);
+          if (mappedKey.startsWith('__concat__')) {
+            try {
+              const def = JSON.parse(mappedKey.slice(10));
+              return (def.cols as string[]).map(c => String(row[c] ?? '')).filter(Boolean).join(def.sep);
+            } catch { return ''; }
+          }
           const val = row[mappedKey];
           if (val !== undefined && val !== null && String(val).trim() !== '') return val;
         }
-        
+
         return '';
       };
 
@@ -2430,7 +2497,11 @@ export default function App() {
         }
         // Currency: 3 or 4 letter code
         else if (field.key === 'currency' && dataType === 'cellars') {
-           const val = String(rawValue || '').toUpperCase().trim();
+           let val = String(rawValue || '').trim();
+           if (val === '£') val = 'GBP';
+           else if (val === '€') val = 'EUR';
+           else if (val === '$') val = 'USD';
+           val = val.toUpperCase();
            if ((val.length < 3 || val.length > 4) && !isMissing) {
               result.status = 'red';
               result.errors.push(`Invalid Currency Code: ${rawValue}. Must be 3 or 4 letters (e.g. GBP, EUR)`);
@@ -2482,16 +2553,7 @@ export default function App() {
         }
         // Wine Names: Check for special characters (allowing Unicode letters/accents and standard/curly apostrophes)
         else if (field.key === 'listing_wine_name' || field.key === 'display_wine_name') {
-           const strVal = String(rawValue || '');
-           // Allowed: letters (including accents), numbers, space, hyphen, dot, comma, apostrophes (standard & curly), parens, ampersand, percent.
-           // Skipped when the row has a valid LWIN — see hasValidLwin above.
-           if (!hasValidLwin && /[^\p{L}0-9\s.,'’()&%-]/u.test(strVal)) {
-              result.status = 'red';
-              result.errors.push(`Wine name contains special characters: ${strVal}`);
-              hasError = true;
-              result.fieldErrors.push(field.key);
-           }
-           result[field.key] = strVal;
+           result[field.key] = String(rawValue || '');
         }
         // Case Size: 1-36
         else if (field.key === 'case_size') {
@@ -2722,12 +2784,12 @@ export default function App() {
            }
            result[field.key] = val;
         }
-        else if (field.key === 'currency') {
-           // Mandatory check is already done.
-           // Just ensure it's a valid currency code? User didn't specify list, just "assigned to it".
-           // "Usually when empty this is your default Currency e.g. GBP"
-           // Since we marked it required=true, the empty check handles it.
-           result[field.key] = rawValue;
+        else if (field.key === 'currency' || field.key === 'so_currency' || field.key === 'po_currency') {
+           let val = String(rawValue || '').trim();
+           if (val === '£') val = 'GBP';
+           else if (val === '€') val = 'EUR';
+           else if (val === '$') val = 'USD';
+           result[field.key] = val.toUpperCase() || rawValue;
         }
         else if (field.key === 'cost' || field.key === 'total' || field.key === 'price' || field.key.startsWith('exc_vat') || field.key === 'case_cost_price' || field.key === 'case_selling_price') {
           const normPrice = normalizeCurrency(rawValue);
@@ -2747,6 +2809,15 @@ export default function App() {
           if (isNaN(val) && !isMissing) {
             result.status = 'red';
             result.errors.push(`Invalid numeric format for ${field.label}: ${rawValue}`);
+            hasError = true;
+            result.fieldErrors.push(field.key);
+          } else if (
+            (dataType === 'inventory' || dataType === 'client_reserves') &&
+            (field.key === 'case_quantity' || field.key === 'total_quantity') &&
+            !isNaN(val) && val === 0
+          ) {
+            result.status = 'red';
+            result.errors.push(`${field.label} cannot be zero.`);
             hasError = true;
             result.fieldErrors.push(field.key);
           }
@@ -2851,7 +2922,6 @@ export default function App() {
             if (!isFieldPresent('country')) missingFields.push('Country');
             if (!isFieldPresent('region')) missingFields.push('Region');
             if (!isFieldPresent('type')) missingFields.push('Wine Type');
-            if (!isFieldPresent('sub_type')) missingFields.push('Wine Sub-Type');
 
             if (missingFields.length > 0) {
                result.status = 'red';
@@ -2919,9 +2989,16 @@ export default function App() {
          // but name/code uniqueness is more specific here.
          duplicateFingerprint = `${name}|${code}`;
       } else if (dataType === 'inventory' || dataType === 'client_reserves') {
-         const fields = ['lwin7', 'vintage', 'case_size', 'size', 'tax_status', 'case_quantity', 'total_quantity', 'rotation_number'];
-         if (dataType === 'client_reserves') fields.push('account_code');
-         duplicateFingerprint = fields.map(k => String(result[k] || '')).join('|');
+         // Rotation number (SKU) is the lot identifier — different rotation = different entry, never a duplicate.
+         // Only flag when rotation_number is present and matches; skip the check entirely when it's absent.
+         const rotNum = String(result['rotation_number'] || '').trim();
+         if (rotNum) {
+            const fields = ['rotation_number', 'lwin7', 'vintage', 'case_size', 'size', 'tax_status'];
+            if (dataType === 'client_reserves') fields.push('account_code');
+            duplicateFingerprint = fields.map(k => String(result[k] || '')).join('|');
+         } else {
+            duplicateFingerprint = ''; // no rotation number → can't confirm identity → skip
+         }
       } else if (dataType === 'sales_orders') {
          duplicateFingerprint = ['so_number', 'lwin7', 'vintage', 'case_size', 'size']
           .map(k => String(result[k] || '')).join('|');
@@ -2933,8 +3010,9 @@ export default function App() {
           .map(k => String(result[k] || '')).join('|');
       }
       
-      // For client_reserves: if account_code is missing we can't assert per-client uniqueness, so skip.
-      const skipDuplicateCheck = dataType === 'client_reserves' && !String(result['account_code'] || '').trim();
+      // Skip when: no fingerprint (rotation number absent for inventory/client_reserves), or client_reserves missing account_code.
+      const skipDuplicateCheck = !duplicateFingerprint ||
+        (dataType === 'client_reserves' && !String(result['account_code'] || '').trim());
 
       if (!skipDuplicateCheck && seenRows.has(duplicateFingerprint) && !currentIgnored.has(idx)) {
         result.isDuplicate = true;
@@ -2942,9 +3020,9 @@ export default function App() {
         if (dataType === 'contacts' || dataType === 'private_clients' || dataType === 'trade_clients' || dataType === 'suppliers') {
            result.errors.push(`Duplicate Account Code detected: ${duplicateFingerprint}`);
         } else if (dataType === 'inventory') {
-           result.errors.push('Suspect duplicate detected (Same LWIN, Vintage, Size, Tax, Quantities, Rot #)');
+           result.errors.push('Suspect duplicate detected (Same Rotation #, LWIN, Vintage, Size, Tax Status)');
         } else if (dataType === 'client_reserves') {
-           result.errors.push('Suspect duplicate detected (Same Account Code, LWIN, Vintage, Size, Tax, Quantities, Rot #)');
+           result.errors.push('Suspect duplicate detected (Same Account Code, Rotation #, LWIN, Vintage, Size, Tax Status)');
         } else if (dataType === 'sales_orders') {
            result.errors.push('Suspect duplicate detected (Same SO Number, LWIN, Vintage, Case Size, Bottle Size)');
         } else if (dataType === 'purchase_orders') {
@@ -2956,6 +3034,16 @@ export default function App() {
       } else if (!skipDuplicateCheck) {
         seenRows.set(duplicateFingerprint, idx);
       }
+
+      // --- Custom Columns (user-defined extra output columns from SchemaMapper) ---
+      Object.entries(map || {}).forEach(([fieldKey, header]) => {
+        if (!fieldKey.startsWith('__custom_col__') || !header) return;
+        if (header.startsWith('__const__')) { result[fieldKey] = header.slice(9); }
+        else if (header.startsWith('__concat__')) {
+          try { const def = JSON.parse(header.slice(10)); result[fieldKey] = (def.cols as string[]).map((c: string) => String(row[c] ?? '')).filter(Boolean).join(def.sep); }
+          catch { result[fieldKey] = ''; }
+        } else { result[fieldKey] = row[header] !== undefined && row[header] !== null ? String(row[header]) : ''; }
+      });
 
       // --- Status Assignment (Preliminary) ---
       if (hasError) result.status = 'red';
@@ -3236,7 +3324,13 @@ export default function App() {
         console.log('[StartNew] Clearing completed flag for:', targetDataType);
         delete newCompleted[targetDataType];
         setCompletedTasks(newCompleted);
-        localStorage.setItem(completedStorageKey, JSON.stringify(newCompleted));
+        try {
+          const metaOnly: Record<string, { fileName: string; completedAt: string }> = {};
+          Object.keys(newCompleted).forEach(t => {
+            metaOnly[t] = { fileName: newCompleted[t].fileName, completedAt: newCompleted[t].completedAt };
+          });
+          localStorage.setItem(completedStorageKey, JSON.stringify(metaOnly));
+        } catch { /* ignore */ }
       }
     }
 
@@ -3526,12 +3620,29 @@ export default function App() {
                   </button>
                 )}
                 <button
+                  onClick={() => { setManualEditsMap({}); setAutoFixedMap({}); setCalculationLogsMap({}); setStep('map'); }}
+                  className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider bg-white px-3 py-1.5 rounded-full border border-[#e0e8ef] shadow-sm hover:border-[#2d97af] transition-colors"
+                  title="Go back to column mapping — raw data is kept, manual edits are cleared"
+                >
+                  <Edit2 size={13} />
+                  Remap
+                </button>
+                <button
                   onClick={handleStartNew}
                   className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider bg-white px-3 py-1.5 rounded-full border border-[#e0e8ef] shadow-sm hover:border-[#2d97af] transition-colors"
                 >
                   <RefreshCcw size={13} />
                   Start New
                 </button>
+                {showOnlyCorrect && processedData.some(r => r.status === 'green') && (
+                  <button
+                    onClick={handleExportCorrect}
+                    className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider bg-emerald-600 text-white px-4 py-1.5 rounded-full shadow-sm hover:bg-emerald-700 transition-all"
+                  >
+                    <Download size={13} />
+                    Export Correct ({processedData.filter(r => r.status === 'green').length})
+                  </button>
+                )}
                 {showOnlyErrors && processedData.some(r => r.status === 'red') && (
                   <>
                     <input
@@ -3814,6 +3925,7 @@ export default function App() {
                 onCancel={goHome}
                 requireEitherOr={(['inventory', 'client_reserves', 'sales_orders', 'purchase_orders'] as DataType[]).includes(dataType) ? ['lwin7', 'listing_wine_name'] : undefined}
                 previewRows={rawData.slice(0, 4)}
+                initialMapping={Object.keys(mapping).length > 0 ? mapping : undefined}
               />
             </React.Suspense>
           )}
@@ -3871,29 +3983,33 @@ export default function App() {
               <div className="flex flex-col md:flex-row gap-4 items-stretch">
                 <div className="flex-1 grid grid-cols-4 gap-4">
                   <button
-                    onClick={() => { setShowOnlyErrors(false); setShowOnlyEdited(false); setReviewPage(1); }}
+                    onClick={() => { setShowOnlyErrors(false); setShowOnlyEdited(false); setShowOnlyCorrect(false); setReviewPage(1); }}
                     className={`p-6 rounded-3xl border shadow-sm transition-all text-left ${
-                      !showOnlyErrors && !showOnlyEdited
+                      !showOnlyErrors && !showOnlyEdited && !showOnlyCorrect
                         ? 'bg-black border-black text-white ring-4 ring-black/10'
                         : 'bg-white border-black/5 text-black hover:bg-black/[0.02]'
                     }`}
                   >
-                    <p className={`text-[10px] uppercase tracking-widest mb-1 ${!showOnlyErrors && !showOnlyEdited ? 'text-white/60' : 'text-black/40'}`}>Total Rows</p>
+                    <p className={`text-[10px] uppercase tracking-widest mb-1 ${!showOnlyErrors && !showOnlyEdited && !showOnlyCorrect ? 'text-white/60' : 'text-black/40'}`}>Total Rows</p>
                     <p className="text-3xl font-serif">{processedData.length}</p>
                   </button>
 
                   <button
-                    onClick={() => { setShowOnlyErrors(false); setShowOnlyEdited(false); setReviewPage(1); }}
-                    className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100 shadow-sm hover:bg-emerald-100 transition-all text-left"
+                    onClick={() => { setShowOnlyErrors(false); setShowOnlyEdited(false); setShowOnlyCorrect(c => !c); setReviewPage(1); }}
+                    className={`p-6 rounded-3xl border shadow-sm transition-all text-left ${
+                      showOnlyCorrect
+                        ? 'bg-emerald-500 border-emerald-600 text-white ring-4 ring-emerald-100'
+                        : 'bg-emerald-50 border-emerald-100 text-emerald-700 hover:bg-emerald-100'
+                    }`}
                   >
-                    <p className="text-[10px] uppercase tracking-widest text-emerald-600/60 mb-1">Ready</p>
-                    <p className="text-3xl font-serif text-emerald-700">
+                    <p className={`text-[10px] uppercase tracking-widest mb-1 ${showOnlyCorrect ? 'text-white/60' : 'text-emerald-600/60'}`}>Ready</p>
+                    <p className="text-3xl font-serif">
                       {processedData.filter(r => r.status === 'green').length}
                     </p>
                   </button>
 
                   <button
-                    onClick={() => { setShowOnlyErrors(true); setShowOnlyEdited(false); setReviewPage(1); }}
+                    onClick={() => { setShowOnlyErrors(true); setShowOnlyEdited(false); setShowOnlyCorrect(false); setReviewPage(1); }}
                     className={`p-6 rounded-3xl border shadow-sm transition-all text-left ${
                       showOnlyErrors
                         ? 'bg-rose-500 border-rose-600 text-white ring-4 ring-rose-100'
@@ -3907,7 +4023,7 @@ export default function App() {
                   </button>
 
                   <button
-                    onClick={() => { setShowOnlyErrors(false); setShowOnlyEdited(true); setReviewPage(1); }}
+                    onClick={() => { setShowOnlyErrors(false); setShowOnlyEdited(true); setShowOnlyCorrect(false); setReviewPage(1); }}
                     className={`p-6 rounded-3xl border shadow-sm transition-all text-left ${
                       showOnlyEdited 
                         ? 'bg-orange-500 border-orange-600 text-white ring-4 ring-orange-100' 
@@ -3923,16 +4039,25 @@ export default function App() {
                 
                 <div className="bg-white p-2 rounded-3xl border border-black/5 shadow-sm flex items-center gap-1">
                   <button
-                    onClick={() => { setShowOnlyErrors(false); setReviewPage(1); }}
+                    onClick={() => { setShowOnlyErrors(false); setShowOnlyCorrect(false); setReviewPage(1); }}
                     className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-2xl text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      !showOnlyErrors ? 'bg-black text-white shadow-lg' : 'text-black/40 hover:bg-black/5'
+                      !showOnlyErrors && !showOnlyCorrect ? 'bg-black text-white shadow-lg' : 'text-black/40 hover:bg-black/5'
                     }`}
                   >
                     <LayoutGrid size={14} />
                     Full File
                   </button>
                   <button
-                    onClick={() => { setShowOnlyErrors(true); setReviewPage(1); }}
+                    onClick={() => { setShowOnlyCorrect(true); setShowOnlyErrors(false); setReviewPage(1); }}
+                    className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-2xl text-[10px] font-bold uppercase tracking-widest transition-all ${
+                      showOnlyCorrect ? 'bg-emerald-500 text-white shadow-lg' : 'text-black/40 hover:bg-black/5'
+                    }`}
+                  >
+                    <CheckCircle2 size={14} />
+                    Correct Only
+                  </button>
+                  <button
+                    onClick={() => { setShowOnlyErrors(true); setShowOnlyCorrect(false); setReviewPage(1); }}
                     className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-2xl text-[10px] font-bold uppercase tracking-widest transition-all ${
                       showOnlyErrors ? 'bg-rose-500 text-white shadow-lg' : 'text-black/40 hover:bg-black/5'
                     }`}
@@ -4115,6 +4240,11 @@ export default function App() {
                             </th>
                           );
                         })}
+                        {Object.keys(mapping).filter(k => k.startsWith('__custom_col__')).map(k => (
+                          <th key={k} className="px-3 py-1.5 border-r border-[#dadce0] font-normal min-w-[150px] select-none">
+                            <span className="text-purple-700">{k.slice(14)}</span>
+                          </th>
+                        ))}
                         <th className="px-3 py-1.5 w-32 font-normal border-l border-[#dadce0] sticky right-0 bg-[#f8f9fa] z-20 text-center">Status</th>
                       </tr>
                     </thead>
@@ -4122,6 +4252,7 @@ export default function App() {
                       {processedData
                         .filter(row => {
                           if (showOnlyErrors) return row.status === 'red';
+                          if (showOnlyCorrect) return row.status === 'green';
                           if (showOnlyEdited) return manualEditsMap[row.id] !== undefined;
                           return true;
                         })
@@ -4155,8 +4286,9 @@ export default function App() {
                             }
 
                             return (
-                              <td 
-                                key={field.key} 
+                              <td
+                                key={field.key}
+                                data-cell={`${row.id}-${field.key}`}
                                 className={`px-3 py-0 text-sm border-r border-[#dadce0] last:border-r-0 cursor-cell relative min-w-[150px] transition-all ${bgClass}`}
                                 onClick={() => startEditingCell(row.id, field.key)}
                                 title={calcLog || ''}
@@ -4183,6 +4315,34 @@ export default function App() {
                                       {field.options.map(opt => (
                                         <option key={opt} value={opt}>{opt}</option>
                                       ))}
+                                    </select>
+                                  ) : (field.key === 'region' || field.key === 'sub_region') && (() => {
+                                    const rowCountry = String(row['country'] || '').trim().toLowerCase();
+                                    return rowCountry && regionRefData.some(r => r.Parent?.toLowerCase() === rowCountry);
+                                  })() ? (
+                                    <select
+                                      autoFocus
+                                      className="w-full h-full px-3 py-1 bg-inherit outline-none text-sm appearance-none"
+                                      value={val === null || val === undefined ? '' : String(val)}
+                                      onChange={(e) => {
+                                        if (!e.target.value) return;
+                                        setEditingCell(null);
+                                        const updatedRow = { ...row, [field.key]: e.target.value };
+                                        handleRowUpdate(updatedRow, field.key);
+                                      }}
+                                    >
+                                      <option value="">— select region —</option>
+                                      {Array.from(
+                                        new Map(
+                                          regionRefData
+                                            .filter(r => r.Parent?.toLowerCase() === String(row['country'] || '').trim().toLowerCase() && r.Type?.toLowerCase() !== 'country')
+                                            .map(r => [r.Region, r])
+                                        ).values()
+                                      )
+                                        .sort((a, b) => a.Region.localeCompare(b.Region))
+                                        .map(r => (
+                                          <option key={r.Region} value={r.Region}>{r.Region}</option>
+                                        ))}
                                     </select>
                                   ) : field.key === 'cellar_name' ? (
                                     <CellarAutocomplete
@@ -4264,6 +4424,11 @@ export default function App() {
                               </td>
                             );
                           })}
+                          {Object.keys(mapping).filter(k => k.startsWith('__custom_col__')).map(k => (
+                            <td key={k} className="px-3 py-0 text-sm border-r border-[#dadce0] min-w-[150px]">
+                              <span className="text-xs text-purple-800">{String(row[k] ?? '')}</span>
+                            </td>
+                          ))}
                            <td className="px-3 py-1 border-l border-[#dadce0] sticky right-0 bg-white group-hover:bg-[#f1f3f4] z-10">
                             <div className="flex items-center justify-center gap-2">
                               <button
@@ -4383,6 +4548,7 @@ export default function App() {
                 {(() => {
                   const filteredCount = processedData.filter(row => {
                     if (showOnlyErrors) return row.status === 'red';
+                    if (showOnlyCorrect) return row.status === 'green';
                     if (showOnlyEdited) return manualEditsMap[row.id] !== undefined;
                     return true;
                   }).length;
