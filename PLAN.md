@@ -249,6 +249,63 @@ Added on its own branch (`feature/scalability-fix`), separate from Session 10.
 - Two entries both named `Jura` existed: one with `parent=France` (correct) and one with `parent=German Swiss` (Swiss canton). The frontend's `.find()` could pick either, causing Arbois to resolve to Switzerland instead of France
 - Swiss entry renamed to `Jura (Switzerland)`; existing `Arbois` entry (which had the wrong parent chain) deleted and re-inserted with `parent='France'` directly
 
+### Visual redesign — Wine Hub rebrand ✅
+Added on its own branch (`feature/component-split`).
+
+- App renamed from vinoDruid to Druid (internal); home screen rebrand to Wine Hub visual style
+- Sticky top bar with teal accent palette, Inter font, compact card layout
+- Login interstitial removed — authenticated users land directly on the home screen
+- Mark-complete flow navigation fixed: after confirming a session complete the user returns to the home screen correctly
+
+### Security hardening ✅
+Added on `feature/component-split` alongside the visual redesign.
+
+**Backend (`server.py`):**
+- CORS locked to the specific frontend origin (replaces wildcard `allow_origins=["*"]`)
+- Security headers added to all responses: `X-Frame-Options`, `X-Content-Type-Options`, `Strict-Transport-Security`, `Referrer-Policy`
+- Request body size limit enforced (protects against large payload abuse)
+- JWKS cache TTL reduced to avoid serving stale Auth0 keys for too long
+
+**Frontend (Vite build):**
+- Lazy loading applied to heavy components so the initial JS bundle is smaller
+- Manual chunk splitting in `vite.config.ts` so exceljs and Auth0 are separate chunks (not bundled into the main entry point)
+
+### Bug fixes — validation and field logic ✅
+All on `feature/component-split`.
+
+- Region dropdown in the review table now shows only regions that belong to the selected country, preventing invalid country/region combinations
+- Bulk-fix suggestion scoping tightened: when a user fixes a field and bulk-fix is offered, the suggestion is scoped to rows where the old value matches, not all red rows for that field
+- Remap constant corrected for a field type that was pointing at the wrong schema key
+- Duplicate fingerprint extended to cover an additional identity field combination for inventory rows
+- Wine name character validation relaxed to allow characters that appear in legitimate wine names
+- USA accepted as a country alias (in addition to US and United States) for files that use that spelling
+- Quantity zero handling: zero is now accepted as a valid quantity value instead of being treated as missing
+- Currency symbol variants normalised before validation so rows are not incorrectly flagged
+- LWIN conflict detection: when a file has two rows with the same LWIN but different wine identity fields, both are now flagged as a conflict rather than silently resolving to one
+- Inventory customer code column: mapped correctly so it flows through to the export
+
+### Component split — App.tsx refactor ✅
+`src/App.tsx` was 4800+ lines. Extracted into focused files:
+
+| New file | What it contains |
+|---|---|
+| `src/types.ts` | All shared TypeScript interfaces (`ProcessedRow`, `DataType`, `SchemaEntry`, etc.) |
+| `src/constants.ts` | `SCHEMAS`, `BULK_FIXABLE_FIELDS`, and other top-level constants |
+| `src/utils/processData.ts` | `runProcessData` — the core row-by-row validation engine |
+| `src/utils/exportUtils.ts` | CSV/XLSX download helpers (`rowsToCsv`, `downloadTemplate`, etc.) |
+| `src/components/AppHeader.tsx` | Top bar: logo, user greeting, logout, mark-complete button |
+| `src/components/UploadStep.tsx` | File upload and manual-entry entry point (step before mapping) |
+| `src/components/ColumnPickerModal.tsx` | Optional column picker shown before manual entry grid |
+| `src/components/ReviewTable.tsx` | The full review-screen table, inline cell editing, bulk-fix banner |
+| `src/components/ValidationProgressOverlay.tsx` | Progress bar overlay shown during chunked async validation |
+
+`App.tsx` is now ~2300 lines and holds only orchestration state and event handlers.
+
+### processData race condition fix ✅
+Root cause: `runProcessData` is async and chunked (yields every 300 rows via `setTimeout`). If two edits were made in quick succession, two `processData` calls could be in flight simultaneously. Whichever finished last would win and overwrite `processedData` — even if it was the older call, which had not seen the newer edit in its snapshot. The user saw the edited cell turn empty after dismissing the bulk-fix banner because the older call finished after the newer one and stomped the correct result.
+
+Fix: added `processDataLatestId = useRef(0)` to App.tsx. Every `processData` call stamps itself with a monotonically-increasing ID at start. Only the call whose ID still matches the ref's current value when it completes is allowed to call `setProcessedData`. All 14 redundant `setProcessedData(processed)` calls in callers were removed so stale calls cannot update state through the back door.
+
 ### Session 11 — Auth testing and hardening
 - End-to-end test of full auth flow: create user in Auth0, log in, confirm correct organisation loads
 - Test data isolation: confirm a token from org A cannot retrieve org B's sessions or data

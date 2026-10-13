@@ -60,6 +60,15 @@ The bulk-fix suggestion was also extended to cover type, sub-type, currency, war
 
 A data error was found in the regions reference table: the region Arbois was pointing to the wrong parent chain and ending up linked to Switzerland instead of France. The Swiss and French entries both named Jura were colliding and the app was picking the wrong one. The Swiss entry was renamed to Jura (Switzerland) and Arbois was re-entered with France as its direct parent.
 
+Visual redesign, security hardening, bug fixes and code restructure (added alongside Session 10)
+The app was given a cleaner visual identity called Wine Hub: a sticky top bar, teal accent palette, Inter font, and a more compact card layout. The login interstitial was removed so authenticated users land directly on the home screen. On the security side, CORS was locked to the specific frontend origin, security headers were added to all responses, a body size limit was enforced on the backend, and the frontend bundle was split into smaller lazy-loaded chunks so the initial download is faster.
+
+A batch of validation and field-logic bugs were fixed at the same time: the region dropdown in the review table now filters to regions that belong to the selected country, bulk-fix suggestions are scoped to rows with the same old value rather than all red rows, USA is accepted as a country alias, zero is accepted as a valid quantity, currency symbol variants are normalised before validation, LWIN conflict detection was added, and the inventory customer code column now maps correctly through to the export.
+
+The main source file App.tsx, which had grown to over 4800 lines, was broken into focused files: shared types in types.ts, constants in constants.ts, the core validation engine in utils/processData.ts, download helpers in utils/exportUtils.ts, and five new components covering the top bar, upload step, column picker, review table, and progress overlay. App.tsx now sits at around 2300 lines and holds only state and event handlers.
+
+A concurrency bug was also found and fixed: when two edits were made in quick succession, two background validation passes could be running at the same time. Whichever one finished last would overwrite the displayed data, which meant a fast edit could be silently reverted by a slower one completing afterwards. The fix ensures only the most recently started validation pass is allowed to update the screen.
+
 Session 11: Testing and hardening
 End-to-end test of the full auth flow: register a new user in Auth0, log in, confirm the right organisation is loaded, test role restrictions, confirm a token from organisation A cannot access organisation B's data. Fix anything that needs attention.
 

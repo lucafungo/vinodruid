@@ -9,6 +9,8 @@ import urllib.request as _urllib
 from contextlib import contextmanager
 from typing import Any, Optional
 
+import queue
+import threading
 import pyodbc
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -242,12 +244,12 @@ def _provision_auth0_user(email: str) -> str:
 # by email, so downstream code can scope everything to org_id/user_id.
 # Used by nearly every endpoint via get_org_id / get_user_id / _require_admin.
 def _resolve_user(request: Request) -> tuple:
-    """Returns (org_id, user_id). Caches result on request.state to avoid repeat DB lookups."""
+    """Returns (org_id, user_id, user_access). Caches result on request.state to avoid repeat DB lookups."""
     if hasattr(request.state, "_vd_user"):
         return request.state._vd_user
 
     if _SKIP_AUTH:
-        result = (int(os.getenv("DEV_ORG_ID", "1")), int(os.getenv("DEV_USER_ID", "1")))
+        result = (int(os.getenv("DEV_ORG_ID", "1")), int(os.getenv("DEV_USER_ID", "1")), "admin")
         request.state._vd_user = result
         return result
 
@@ -264,14 +266,14 @@ def _resolve_user(request: Request) -> tuple:
     # of truth for which organisation/user record that email maps to
     with get_db() as conn:
         cursor = conn.execute(
-            "SELECT user_id, organisation_id FROM users WHERE email = ? AND disabled = 0", (email,)
+            "SELECT user_id, organisation_id, user_access FROM users WHERE email = ? AND disabled = 0", (email,)
         )
         user = row_as_dict(cursor)
 
     if not user:
         raise HTTPException(status_code=403, detail="Access denied.")
 
-    result = (user["organisation_id"], user["user_id"])
+    result = (user["organisation_id"], user["user_id"], user.get("user_access", ""))
     request.state._vd_user = result
     return result
 
@@ -294,11 +296,8 @@ def _require_admin(request: Request) -> None:
     """Raises 403 if the requesting user is not an admin."""
     if _SKIP_AUTH:
         return
-    _, user_id = _resolve_user(request)
-    with get_db() as conn:
-        cursor = conn.execute("SELECT user_access FROM users WHERE user_id = ?", (user_id,))
-        row = row_as_dict(cursor)
-    if not row or row.get("user_access") != "admin":
+    _, _, user_access = _resolve_user(request)
+    if user_access != "admin":
         raise HTTPException(status_code=403, detail="Admin access required.")
 
 
@@ -321,21 +320,53 @@ def ensure_database():
         conn.close()
 
 
+_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "5"))
+_pool: queue.Queue = queue.Queue(maxsize=_POOL_SIZE)
+_pool_lock = threading.Lock()
+
+def _make_connection() -> pyodbc.Connection:
+    conn = pyodbc.connect(make_conn_str(DATABASE))
+    conn.autocommit = False
+    return conn
+
+def _acquire_connection() -> pyodbc.Connection:
+    try:
+        conn = _pool.get_nowait()
+        try:
+            conn.execute("SELECT 1")
+            return conn
+        except Exception:
+            try: conn.close()
+            except Exception: pass
+    except queue.Empty:
+        pass
+    return _make_connection()
+
+def _release_connection(conn: pyodbc.Connection) -> None:
+    try:
+        if not _pool.full():
+            _pool.put_nowait(conn)
+            return
+    except queue.Full:
+        pass
+    try: conn.close()
+    except Exception: pass
+
 # Context manager giving every endpoint a transactional DB connection: commits
-# on success, rolls back on any exception, always closes. Used with
+# on success, rolls back on any exception, returns connection to pool. Used with
 # "with get_db() as conn:" throughout the endpoints below.
 @contextmanager
 def get_db():
-    conn = pyodbc.connect(make_conn_str(DATABASE))
-    conn.autocommit = False
+    conn = _acquire_connection()
     try:
         yield conn
         conn.commit()
     except Exception:
-        conn.rollback()
+        try: conn.rollback()
+        except Exception: pass
         raise
     finally:
-        conn.close()
+        _release_connection(conn)
 
 
 # Converts a pyodbc cursor's remaining rows into a list of dicts (column name
@@ -438,7 +469,6 @@ def init_db():
                 organisation_id INT NOT NULL REFERENCES organisations(organisation_id),
                 alias NVARCHAR(100),
                 user_type NVARCHAR(50),
-                password NVARCHAR(255),
                 title NVARCHAR(50),
                 forename NVARCHAR(100),
                 surname NVARCHAR(100),
@@ -1076,20 +1106,12 @@ async def save_master_cellars(request: Request):
     names = body.get("names", [])
     with get_db() as conn:
         conn.execute("DELETE FROM master_cellars WHERE organisation_id = ?", (org_id,))
-        for name in names:
-            conn.execute(
+        if names:
+            _executemany_batched(
+                conn,
                 "INSERT INTO master_cellars (name, organisation_id, created_by) VALUES (?, ?, ?)",
-                (name, org_id, user_id)
+                [(name, org_id, user_id) for name in names],
             )
-    return {"success": True}
-
-
-# DELETE /api/master/cellars - clears the org's entire cellar list
-@app.delete("/api/master/cellars")
-def clear_master_cellars(request: Request):
-    org_id = get_org_id(request)
-    with get_db() as conn:
-        conn.execute("DELETE FROM master_cellars WHERE organisation_id = ?", (org_id,))
     return {"success": True}
 
 
@@ -1115,20 +1137,12 @@ async def save_master_clients(request: Request):
     codes = body.get("codes", [])
     with get_db() as conn:
         conn.execute("DELETE FROM master_clients WHERE organisation_id = ?", (org_id,))
-        for code in codes:
-            conn.execute(
+        if codes:
+            _executemany_batched(
+                conn,
                 "INSERT INTO master_clients (code, organisation_id, created_by) VALUES (?, ?, ?)",
-                (code, org_id, user_id)
+                [(code, org_id, user_id) for code in codes],
             )
-    return {"success": True}
-
-
-# DELETE /api/master/clients - clears the org's entire client code list
-@app.delete("/api/master/clients")
-def clear_master_clients(request: Request):
-    org_id = get_org_id(request)
-    with get_db() as conn:
-        conn.execute("DELETE FROM master_clients WHERE organisation_id = ?", (org_id,))
     return {"success": True}
 
 
@@ -1144,16 +1158,6 @@ def get_regions(request: Request):
         cols = ["Region", "Type", "Parent", "Appellation", "Classification", "Designation"]
         return [dict(zip(cols, row)) for row in cursor.fetchall()]
 
-
-# POST /api/system/ai-fix - placeholder for an AI-assisted data-cleaning
-# feature; currently always returns 503 since it's not wired up to Claude yet
-@app.post("/api/system/ai-fix")
-async def ai_fix(request: Request):
-    get_org_id(request)  # require a valid token before even returning 503
-    raise HTTPException(
-        status_code=503,
-        detail="AI data cleaning is not yet configured. Set ANTHROPIC_API_KEY to enable this feature."
-    )
 
 
 if __name__ == "__main__":

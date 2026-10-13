@@ -1,9 +1,11 @@
 ﻿import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useAuth0 } from '@auth0/auth0-react';
-import { normalizeBottleSize, normalizeVintage, normalizeCurrency, normalizeDate, normalizeCountry } from './utils/normalization';
-import { WINE_TYPES, WINE_SUBTYPES, TYPE_TO_SUBTYPE, findClosestMatch } from './utils/wineValidation';
-import { CheckCircle2, AlertCircle, HelpCircle, ArrowRight, Sparkles, RefreshCcw, RotateCcw, RotateCw, Trash2, Download, Upload, Filter, LayoutGrid, Copy, Check, Edit2, X, Calculator, Play, Plus } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import type { DataType, Step, ProcessedRow } from './types';
+import { SCHEMAS, TITLE_OPTIONS, PAYMENT_TERMS_OPTIONS } from './constants';
+import { normalizeCurrency } from './utils/normalization';
+import { runProcessData } from './utils/processData';
+import { X } from 'lucide-react';
+import { AnimatePresence } from 'motion/react';
 import { FileUploader } from './components/FileUploader';
 import { RulesModal } from './components/RulesModal';
 import { RowEditor } from './components/RowEditor';
@@ -11,6 +13,12 @@ import { CellarAutocomplete } from './components/CellarAutocomplete';
 import { DuplicateComparisonModal } from './components/DuplicateComparisonModal';
 import { AddLocationModal } from './components/AddLocationModal';
 import { AiFixReviewModal } from './components/AiFixReviewModal';
+import { AppHeader } from './components/AppHeader';
+import { UploadStep } from './components/UploadStep';
+import { ReviewTable } from './components/ReviewTable';
+import { ColumnPickerModal } from './components/ColumnPickerModal';
+import { ValidationProgressOverlay } from './components/ValidationProgressOverlay';
+import { rowsToCsv, downloadBlob, downloadCsv, downloadTemplate } from './utils/exportUtils';
 
 // Lazy-loaded: only pulled in when the user actually reaches that step or panel.
 // ExcelJS is imported dynamically inside handleDownloadTemplate for the same reason.
@@ -18,458 +26,6 @@ const AdminPanel     = React.lazy(() => import('./components/AdminPanel').then(m
 const ManualEntryGrid = React.lazy(() => import('./components/ManualEntryGrid').then(m => ({ default: m.ManualEntryGrid })));
 const SchemaMapper   = React.lazy(() => import('./components/SchemaMapper').then(m => ({ default: m.SchemaMapper })));
 
-// --- Types ---
-
-/**
- * Supported data types for import.
- * Currently focused on 'inventory', but extensible to others.
- */
-type DataType = 'inventory' | 'client_reserves' | 'contacts' | 'private_clients' | 'trade_clients' | 'suppliers' | 'sales_orders' | 'purchase_orders' | 'cellars';
-
-/**
- * Application workflow steps.
- * - upload: Initial file selection.
- * - map: Mapping CSV headers to schema fields.
- * - review: Validating and editing the data.
- */
-type Step = 'upload' | 'map' | 'review' | 'manual';
-
-/**
- * Schema definition for each data type.
- * Defines the expected fields and their default required status.
- * Note: 'inventory' schema is dynamic and adjusted at runtime based on user input.
- * This is the master field list: it drives the column-mapping UI (SchemaMapper, step === 'map'),
- * the manual entry grid's column picker, and the validation rules used by processData() below.
- * Each data type (inventory, contacts, sales_orders, ...) has its own field list; most share the
- * same shape (address/payment-terms fields) so only the less obvious ones are called out below.
- */
-const SCHEMAS: Record<DataType, { label: string, fields: { key: string, label: string, required: boolean, options?: string[], hint?: string, noAutoCalc?: boolean }[] }> = {
-  inventory: {
-    label: 'Inventory',
-    fields: [
-      { key: 'lwin7', label: 'LWIN7', required: true },
-      { key: 'listing_wine_name', label: 'Listing Wine Name', required: false },
-      { key: 'display_wine_name', label: 'Display Wine Name', required: false },
-      { key: 'producer', label: 'Producer', required: false },
-      { key: 'vintage', label: 'Vintage', required: true },
-      { key: 'country', label: 'Country', required: false },
-      { key: 'type', label: 'Type', required: false },
-      { key: 'sub_type', label: 'Sub-Type', required: false },
-      { key: 'region', label: 'Region', required: false },
-      { key: 'sub_region', label: 'Sub-Region', required: false },
-      { key: 'abv', label: 'ABV in %', required: true },
-      { key: 'case_size', label: 'Case Size', required: true },
-      { key: 'size', label: 'Bottle Size (cl)', required: true },
-      { key: 'tax_status', label: 'Tax Status', required: true },
-      { key: 'case_quantity', label: 'Case Quantity', required: true },
-      { key: 'total_quantity', label: 'Total Quantity', required: true },
-      { key: 'cellar_name', label: 'Cellar Name', required: true },
-      // ... other optional fields
-      { key: 'rotation_number', label: 'Rotation Number', required: false },
-      { key: 'warehouse_location', label: 'Warehouse Location', required: false },
-      { key: 'product_level', label: 'Product-level', required: false },
-      { key: 'wine_entry_id', label: 'Wine-entry ID', required: false },
-      { key: 'packaging_type', label: 'Packaging Type', required: false },
-      { key: 'packaging_code', label: 'Packaging Code', required: false },
-      { key: 'exc_vat_case', label: 'EXC. VAT Case', required: false },
-      { key: 'exc_vat_ret', label: 'EXC. VAT Retail', required: false },
-      { key: 'exc_vat_tra', label: 'EXC. VAT Trade', required: false },
-      { key: 'exc_vat_val', label: 'EXC. VAT Value', required: false },
-      { key: 'currency', label: 'Currency', required: false },
-      { key: 'acquired_on', label: 'Acquired on', required: false },
-      { key: 'landed_on', label: 'Landed On', required: false },
-      { key: 'product_tags', label: 'Product Tags', required: false },
-      { key: 'wine_entry_id_ext', label: 'Wine Entry External ID', required: false },
-      { key: 'purchased_from', label: 'Purchased from', required: false },
-      { key: 'product_description', label: 'Product Description', required: false },
-      { key: 'commodity_code', label: 'Commodity Code', required: false },
-      { key: 'grape_variety', label: 'Grape Variety', required: false },
-    ]
-  },
-  client_reserves: {
-    label: 'Client Reserves',
-    fields: [
-      { key: 'account_code', label: 'Account Code', required: true },
-      { key: 'lwin7', label: 'LWIN', required: true },
-      { key: 'listing_wine_name', label: 'Incoming Wine Name', required: true },
-      { key: 'vintage', label: 'Vintage', required: true },
-      { key: 'case_size', label: 'Case Size', required: true },
-      { key: 'size', label: 'Bottle Size (cl)', required: true },
-      { key: 'case_quantity', label: 'Case Qty', required: true },
-      { key: 'total_quantity', label: 'Bottles Total Qty', required: true },
-      { key: 'tax_status', label: 'Tax Status', required: true },
-      { key: 'cellar_name', label: 'Cellar Name', required: true },
-      { key: 'rotation_number', label: 'Rotation Number', required: false },
-      { key: 'warehouse_location', label: 'Warehouse Location', required: false },
-      { key: 'product_level_sku', label: 'Product level SKU', required: false },
-      { key: 'packaging_type', label: 'Packaging Type', required: false },
-      { key: 'case_cost_price', label: 'Case Cost Price', required: false },
-      { key: 'case_selling_price', label: 'Case Selling Price', required: false },
-      { key: 'case_resell_cost_price', label: 'Case Resell Cost Price', required: false },
-      { key: 'for_sale', label: 'For Sale Y/N', required: false },
-      { key: 'currency', label: 'Currency', required: false },
-      { key: 'acquired_on', label: 'Acquired On', required: false },
-      { key: 'product_tags', label: 'Product Tags', required: false },
-      { key: 'condition_notes', label: 'Condition Notes', required: false },
-      { key: 'purchased_from', label: 'Purchased from', required: false },
-      { key: 'ext_invoice_ref', label: 'EXT Invoice Ref', required: false },
-      // Fields for wines without LWINs
-      { key: 'producer', label: 'Producer', required: false },
-      { key: 'display_wine_name', label: 'Display Wine Name', required: false },
-      { key: 'country', label: 'Country', required: false },
-      { key: 'region', label: 'Region', required: false },
-      { key: 'sub_region', label: 'Sub-Region', required: false },
-      { key: 'color', label: 'Color', required: false },
-      { key: 'type', label: 'Type', required: false },
-      { key: 'sub_type', label: 'Sub-Type', required: false },
-      { key: 'abv', label: 'ABV in %', required: true },
-    ]
-  },
-  contacts: {
-    label: 'Clients / Contact List',
-    fields: [
-      { key: 'account_code', label: 'Account Code', required: true },
-      { 
-        key: 'title', 
-        label: 'Client Title', 
-        required: false,
-        options: [
-          'Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Brigadier', 'Captain', 'Count', 'H.H.', 'HRH Prince', 
-          'Lady', 'PhD', 'Professor', 'Sheikh', 'Sir', 'Master', 'Honourable', 'Major General', 
-          'Baron', 'Dato', 'Datuk', 'Datin', 'Tan Sri', 'Ambassador', 'Madam', 'Squire'
-        ]
-      },
-      { key: 'forename', label: 'Client Forename', required: true },
-      { key: 'surname', label: 'Client Surname', required: true },
-      { key: 'email', label: 'Client Email', required: true },
-      { key: 'address_line_1', label: 'Address Line 1', required: true },
-      { key: 'address_line_2', label: 'Address Line 2', required: false },
-      { key: 'address_line_3', label: 'Address Line 3', required: false },
-      { key: 'city', label: 'City', required: true },
-      { key: 'county', label: 'County', required: false },
-      { key: 'country', label: 'Country', required: true },
-      { key: 'post_code', label: 'Post Code', required: false },
-      { key: 'mobile', label: 'Mobile', required: false },
-      { key: 'phone', label: 'Phone', required: false },
-      { key: 'currency', label: 'Currency', required: true },
-      { key: 'internal_notes', label: 'Internal Notes', required: false },
-      { key: 'tags', label: 'Client Tags', required: false },
-      { 
-        key: 'payment_terms', 
-        label: 'Payment Terms', 
-        required: false,
-        options: [
-          '30 Days', '45 Days', '60 Days', '90 Days', '7 Days', '14 Days', '7 Days - End of Month', 
-          '30 Days - End of Month', 'On invoice receipt', 'Prior to collection', 'On release to your agent', 
-          'On receipt of wines in your account', 'Not specified', '30 Days - After Collection', 
-          'Prior to delivery', '14 Days - End of Month', '45 Days - End of Month', '1 Days - End of Month', 
-          '28 Days', 'On Pre-Advice', 'Other', '30 Days prior to release', '60 Days from release', 
-          'Broking Terms', 'On Availability', 'Immediate', '10 Days'
-        ]
-      },
-      { key: 'credit_limit', label: 'Credit Limit', required: false },
-      { key: 'brokerage', label: 'Brokerage', required: false },
-      { key: 'sales_manager', label: 'Sales Manager', required: false },
-      { key: 'status', label: 'Client Status', required: false },
-      { key: 'bank_name', label: 'Bank Name', required: false },
-      { key: 'bank_account_name', label: 'Bank Account Name', required: false },
-      { key: 'bank_account_number', label: 'Bank Account Number', required: false },
-      { key: 'iban', label: 'IBAN', required: false },
-      { key: 'swift', label: 'SWIFT', required: false },
-    ]
-  },
-  private_clients: {
-    label: 'Private Clients',
-    fields: [
-      { key: 'account_code', label: 'Account Code', required: true },
-      { 
-        key: 'title', 
-        label: 'Title', 
-        required: false,
-        options: [
-          'Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Brigadier', 'Captain', 'Count', 'H.H.', 'HRH Prince', 
-          'Lady', 'PhD', 'Professor', 'Sheikh', 'Sir', 'Master', 'Honourable', 'Major General', 
-          'Baron', 'Dato', 'Datuk', 'Datin', 'Tan Sri', 'Ambassador', 'Madam', 'Squire'
-        ]
-      },
-      { key: 'forename', label: 'Forename', required: true },
-      { key: 'surname', label: 'Surname', required: true },
-      { key: 'email', label: 'Email', required: true },
-      { key: 'address_line_1', label: 'Address Line 1', required: true },
-      { key: 'address_line_2', label: 'Address Line 2', required: false },
-      { key: 'address_line_3', label: 'Address Line 3', required: false },
-      { key: 'city', label: 'City', required: true },
-      { key: 'county', label: 'County', required: false },
-      { key: 'country', label: 'Country', required: true },
-      { key: 'post_code', label: 'Post Code', required: false },
-      { key: 'mobile', label: 'Mobile', required: false },
-      { key: 'phone', label: 'Phone', required: false },
-      { key: 'currency', label: 'Currency', required: true },
-      { key: 'internal_notes', label: 'Internal Notes', required: false },
-      { key: 'tags', label: 'Tags', required: false },
-      { 
-        key: 'payment_terms', 
-        label: 'Payment Terms', 
-        required: false,
-        options: [
-          '30 Days', '45 Days', '60 Days', '90 Days', '7 Days', '14 Days', '7 Days - End of Month', 
-          '30 Days - End of Month', 'On invoice receipt', 'Prior to collection', 'On release to your agent', 
-          'On receipt of wines in your account', 'Not specified', '30 Days - After Collection', 
-          'Prior to delivery', '14 Days - End of Month', '45 Days - End of Month', '1 Days - End of Month', 
-          '28 Days', 'On Pre-Advice', 'Other', '30 Days prior to release', '60 Days from release', 
-          'Broking Terms', 'On Availability', 'Immediate', '10 Days'
-        ]
-      },
-      { key: 'credit_limit', label: 'Credit Limit', required: false },
-      { key: 'brokerage', label: 'Brokerage', required: false },
-      { key: 'sales_manager', label: 'Sales Manager', required: false },
-      { key: 'status', label: 'Status', required: false },
-      { key: 'bank_name', label: 'Bank Name', required: false },
-      { key: 'bank_account_name', label: 'Bank Account Name', required: false },
-      { key: 'bank_account_number', label: 'Bank Account Number', required: false },
-      { key: 'iban', label: 'IBAN', required: false },
-      { key: 'swift', label: 'SWIFT', required: false },
-    ]
-  },
-  trade_clients: {
-    label: 'Trade Clients',
-    fields: [
-      { key: 'account_code', label: 'Account Code', required: true },
-      { key: 'company_name', label: 'Company Name', required: true },
-      {
-        key: 'title',
-        label: 'Title',
-        required: false,
-        options: [
-          'Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Brigadier', 'Captain', 'Count', 'H.H.', 'HRH Prince',
-          'Lady', 'PhD', 'Professor', 'Sheikh', 'Sir', 'Master', 'Honourable', 'Major General',
-          'Baron', 'Dato', 'Datuk', 'Datin', 'Tan Sri', 'Ambassador', 'Madam', 'Squire'
-        ]
-      },
-      { key: 'forename', label: 'Contact First Name', required: true },
-      { key: 'surname', label: 'Contact Surname', required: true },
-      { key: 'email', label: 'Email', required: true },
-      { key: 'address_line_1', label: 'Address Line 1', required: true },
-      { key: 'address_line_2', label: 'Address Line 2', required: false },
-      { key: 'address_line_3', label: 'Address Line 3', required: false },
-      { key: 'city', label: 'City', required: true },
-      { key: 'county', label: 'County', required: false },
-      { key: 'country', label: 'Country', required: true },
-      { key: 'post_code', label: 'Post Code', required: false },
-      { key: 'mobile', label: 'Mobile', required: false },
-      { key: 'phone', label: 'Phone', required: false },
-      { key: 'currency', label: 'Currency', required: true },
-      { key: 'internal_notes', label: 'Internal Notes', required: false },
-      { key: 'tags', label: 'Tags', required: false },
-      { 
-        key: 'payment_terms', 
-        label: 'Payment Terms', 
-        required: false,
-        options: [
-          '30 Days', '45 Days', '60 Days', '90 Days', '7 Days', '14 Days', '7 Days - End of Month', 
-          '30 Days - End of Month', 'On invoice receipt', 'Prior to collection', 'On release to your agent', 
-          'On receipt of wines in your account', 'Not specified', '30 Days - After Collection', 
-          'Prior to delivery', '14 Days - End of Month', '45 Days - End of Month', '1 Days - End of Month', 
-          '28 Days', 'On Pre-Advice', 'Other', '30 Days prior to release', '60 Days from release', 
-          'Broking Terms', 'On Availability', 'Immediate', '10 Days'
-        ]
-      },
-      { key: 'credit_limit', label: 'Credit Limit', required: false },
-      { key: 'brokerage', label: 'Brokerage', required: false },
-      { key: 'sales_manager', label: 'Sales Manager', required: false },
-      { key: 'status', label: 'Status', required: false },
-      { key: 'bank_name', label: 'Bank Name', required: false },
-      { key: 'bank_account_name', label: 'Bank Account Name', required: false },
-      { key: 'bank_account_number', label: 'Bank Account Number', required: false },
-      { key: 'iban', label: 'IBAN', required: false },
-      { key: 'swift', label: 'SWIFT', required: false },
-    ]
-  },
-  suppliers: {
-    label: 'Suppliers',
-    fields: [
-      { key: 'account_code', label: 'Account Code', required: true },
-      { 
-        key: 'title', 
-        label: 'Title', 
-        required: false,
-        options: [
-          'Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Brigadier', 'Captain', 'Count', 'H.H.', 'HRH Prince', 
-          'Lady', 'PhD', 'Professor', 'Sheikh', 'Sir', 'Master', 'Honourable', 'Major General', 
-          'Baron', 'Dato', 'Datuk', 'Datin', 'Tan Sri', 'Ambassador', 'Madam', 'Squire'
-        ]
-      },
-      { key: 'company_name', label: 'Company Name', required: true },
-      { key: 'forename', label: 'Contact First Name', required: false },
-      { key: 'surname', label: 'Contact Surname', required: false },
-      { key: 'main_contact_email', label: 'Main Contact Email', required: true },
-      { key: 'address_line_1', label: 'Address Line 1', required: true },
-      { key: 'address_line_2', label: 'Address Line 2', required: false },
-      { key: 'address_line_3', label: 'Address Line 3', required: false },
-      { key: 'city', label: 'City', required: true },
-      { key: 'county', label: 'County', required: false },
-      { key: 'country', label: 'Country', required: true },
-      { key: 'post_code', label: 'Post Code', required: false },
-      { key: 'mobile', label: 'Mobile', required: false },
-      { key: 'phone', label: 'Phone', required: false },
-      { key: 'currency', label: 'Currency', required: true },
-      { key: 'internal_notes', label: 'Internal Notes', required: false },
-      { key: 'tags', label: 'Tags', required: false },
-      { 
-        key: 'payment_terms', 
-        label: 'Payment Terms', 
-        required: false,
-        options: [
-          '30 Days', '45 Days', '60 Days', '90 Days', '7 Days', '14 Days', '7 Days - End of Month', 
-          '30 Days - End of Month', 'On invoice receipt', 'Prior to collection', 'On release to your agent', 
-          'On receipt of wines in your account', 'Not specified', '30 Days - After Collection', 
-          'Prior to delivery', '14 Days - End of Month', '45 Days - End of Month', '1 Days - End of Month', 
-          '28 Days', 'On Pre-Advice', 'Other', '30 Days prior to release', '60 Days from release', 
-          'Broking Terms', 'On Availability', 'Immediate', '10 Days'
-        ]
-      },
-      { key: 'credit_limit', label: 'Credit Limit', required: false },
-      { key: 'brokerage', label: 'Brokerage', required: false },
-      { key: 'sales_manager', label: 'Sales Manager', required: false },
-      { key: 'status', label: 'Status', required: false },
-      { key: 'bank_name', label: 'Bank Name', required: false },
-      { key: 'bank_account_name', label: 'Bank Account Name', required: false },
-      { key: 'bank_account_number', label: 'Bank Account Number', required: false },
-      { key: 'iban', label: 'IBAN', required: false },
-      { key: 'swift', label: 'SWIFT', required: false },
-    ]
-  },
-  sales_orders: {
-    label: 'Sales Orders',
-    fields: [
-      // Always required
-      { key: 'account_code', label: 'Account Code', required: true },
-      { key: 'so_number', label: 'SO Number', required: true },
-      { key: 'lwin7', label: 'LWIN', required: true },
-      { key: 'tax_status', label: 'Tax Status (IB/DP)', required: true },
-      { key: 'case_size', label: 'Case Size', required: true },
-      { key: 'case_quantity', label: 'Case Qty', required: true },
-      { key: 'total_quantity', label: 'Bottles Total Qty', required: true, noAutoCalc: true },
-      { key: 'exc_vat_case', label: 'Case Selling Price', required: true, hint: 'IB = EXC. VAT · DP = INC. VAT (20%)' },
-      // Conditionally required when no LWIN (wine name first)
-      { key: 'listing_wine_name', label: 'Incoming Wine Name', required: false },
-      { key: 'vintage', label: 'Vintage', required: false },
-      { key: 'size', label: 'Bottle Size (cl)', required: false },
-      { key: 'cellar_name', label: 'Cellar Name', required: false },
-      // Optional
-      { key: 'po_reference', label: 'PO Reference', required: false },
-      { key: 'inv_number', label: 'INV Number', required: false },
-      { key: 'so_created_date', label: 'SO Created Date', required: false },
-      { key: 'so_invoiced_date', label: 'SO Invoiced Date', required: false },
-      { key: 'so_payment_date', label: 'SO Payment Date', required: false },
-      { key: 'sales_manager', label: 'Sales Manager', required: false },
-      { key: 'case_cost_price', label: 'Case Cost Price', required: false, hint: 'IB = EXC. VAT · DP = INC. VAT (20%)' },
-      { key: 'product_level_sku', label: 'Product-level SKU', required: false },
-      { key: 'wine_entry_sku', label: 'Wine-Entry Level SKU', required: false },
-      { key: 'packaging_type', label: 'Packaging Type', required: false },
-      { key: 'so_currency', label: 'SO Currency', required: false },
-      { key: 'exchange_rate', label: 'Exchange Rate (Inverse)', required: false },
-      { key: 'acquired_on', label: 'Date Originally Acquired', required: false },
-      { key: 'purchased_from', label: 'Originally Purchased From', required: false },
-      { key: 'line_po_reference', label: 'SO-Line PO Reference', required: false },
-      { key: 'order_tags', label: 'Order Tags', required: false },
-      { key: 'product_tags', label: 'Product Tags', required: false },
-      { key: 'delivery_date', label: 'Delivery Date', required: false },
-      { key: 'unique_identifier', label: 'Unique Identifier Ref', required: false },
-      { key: 'original_supplier', label: 'Original Supplier', required: false },
-      { key: 'rotation_number', label: 'Rotation Number', required: false },
-      { key: 'so_notes', label: 'SO Internal Notes', required: false },
-    ]
-  },
-  purchase_orders: {
-    label: 'Purchase Orders',
-    fields: [
-      // Always required
-      { key: 'account_code', label: 'Account Code', required: true },
-      { key: 'po_number', label: 'PO Number', required: true },
-      { key: 'tax_status', label: 'PO Tax Status (IB/DP)', required: true },
-      { key: 'case_size', label: 'Case Size', required: true },
-      { key: 'case_quantity', label: 'Case Qty', required: true },
-      { key: 'total_quantity', label: 'Bottles Total Qty', required: true, noAutoCalc: true },
-      { key: 'case_cost_price', label: 'Case Cost Price EXC. VAT', required: true, hint: 'IB = EXC. VAT · DP = INC. VAT (20%)' },
-      { key: 'lwin7', label: 'LWIN', required: true },
-      // Conditionally required when no LWIN
-      { key: 'listing_wine_name', label: 'Incoming Wine Name', required: false },
-      { key: 'vintage', label: 'Vintage', required: false },
-      { key: 'size', label: 'Bottle Size (cl)', required: false },
-      { key: 'cellar_name', label: 'Cellar/Location Name', required: false },
-      // Optional
-      { key: 'po_created_date', label: 'PO Created Date', required: false },
-      { key: 'po_invoiced_date', label: 'PO Invoicing Date', required: false },
-      { key: 'po_payment_status', label: 'PO Payment Status', required: false },
-      { key: 'po_status_invoiced', label: 'PO Status Invoiced', required: false },
-      { key: 'po_line_status_delivered', label: 'PO-Line Status Delivered', required: false },
-      { key: 'delivery_date', label: 'Wine Entry Delivery Date', required: false },
-      { key: 'rotation_number', label: 'Rotation Number', required: false },
-      { key: 'warehouse_location', label: 'Warehouse Location', required: false },
-      { key: 'product_level_sku', label: 'Product-level SKU', required: false },
-      { key: 'wine_entry_sku', label: 'Wine-Entry Level SKU', required: false },
-      { key: 'packaging_type', label: 'Packaging Type', required: false },
-      { key: 'packaging_condition', label: 'Packaging Condition', required: false },
-      { key: 'case_selling_price', label: 'Case Selling Price EXC. VAT', required: false },
-      { key: 'po_currency', label: 'Currency', required: false },
-      { key: 'acquired_on', label: 'Acquired On', required: false },
-      { key: 'product_tags', label: 'Product Tags', required: false },
-      { key: 'purchase_manager', label: 'Purchase Manager', required: false },
-      { key: 'unique_identifier', label: 'Unique Identifier Ref', required: false },
-      { key: 'supplier_invoice_ref', label: 'Supplier Invoice Reference', required: false },
-      { key: 'pre_advice_ref', label: 'Pre-Advice Reference', required: false },
-      { key: 'po_notes', label: 'PO Internal Notes', required: false },
-    ]
-  },
-  cellars: {
-    label: 'Locations / Cellars',
-    fields: [
-      { key: 'cellar_name', label: 'Cellar Name', required: true },
-      { key: 'location_type', label: 'Location Type', required: true },
-      { key: 'cellar_code', label: 'Cellar Code', required: true },
-      { key: 'address_line_1', label: 'Address Line 1', required: true },
-      { key: 'address_line_2', label: 'Address Line 2', required: false },
-      { key: 'address_line_3', label: 'Address Line 3', required: false },
-      { key: 'city', label: 'City', required: true },
-      { key: 'county', label: 'County', required: false },
-      { key: 'country', label: 'Country', required: true },
-      { key: 'post_code', label: 'Post Code', required: false },
-      { key: 'forename', label: 'Main Contact Forename', required: true },
-      { key: 'surname', label: 'Main Contact Surname', required: true },
-      { key: 'email', label: 'Main Contact Email', required: true },
-      { key: 'contact_type', label: 'Main Contact Type', required: true },
-      { key: 'mobile', label: 'Main Contact Mobile', required: false },
-      { key: 'phone', label: 'Phone', required: false },
-      { key: 'currency', label: 'Currency', required: true },
-      { key: 'internal_notes', label: 'Internal Notes', required: false },
-      { key: 'create_as_customer_cellar', label: 'Create as customer cellar', required: true },
-      { key: 'tax_status', label: 'Tax Status', required: true },
-    ]
-  }
-};
-
-/**
- * Represents a single row of data after processing.
- */
-interface ProcessedRow {
-  id: number; // Unique index from original file
-  raw: any; // The original raw data from the CSV/Excel
-  status: 'green' | 'yellow' | 'red'; // Validation status
-  errors: string[]; // List of validation error messages
-  isDuplicate?: boolean; // Flag for duplicate rows
-  duplicateOf?: number; // ID of the row this is a duplicate of
-  autoFixedFields?: string[]; // List of fields modified by AI
-  calculationLogs?: Record<string, string>; // Explanations for AI calculations
-  isPriceOutlier?: boolean; // Flag for price outliers
-  priceOutlierType?: 'high' | 'low' | 'global'; // Type of outlier
-  priceOutlierRef?: number; // Reference price (median or average)
-  priceOutlierRefRowId?: number; // ID of a reference row for comparison
-  fieldErrors: string[]; // Track which fields have errors for UI highlighting
-  [key: string]: any; // Normalized field values
-}
-// ProcessedRow is the shape of every row once it comes out of processData() further below;
-// the review-step table (step === 'review') and the export/upload-corrections handlers all read these fields.
 
 export default function App() {
   // Auth0 hook: gives us login state plus a function to fetch a fresh access token.
@@ -513,6 +69,10 @@ export default function App() {
 
   // Corrections upload
   const correctionsInputRef = useRef<HTMLInputElement>(null);
+  // Tracks the most-recently-started processData call. Only the latest call may commit its result
+  // to processedData state — older in-flight calls discard their result on return. This prevents
+  // a slow earlier call (chunked async) from overwriting a faster newer call's correct output.
+  const processDataLatestId = useRef(0);
   
   // Data storage
   const [rawData, setRawData] = useState<any[]>([]); // Current working copy of raw data
@@ -524,7 +84,10 @@ export default function App() {
   // Processing state
   const [mapping, setMapping] = useState<Record<string, string>>({}); // Map: Schema Field -> CSV Header
   const [processedData, setProcessedData] = useState<ProcessedRow[]>([]); // Validated and normalized data
-  
+  const greenCount = useMemo(() => processedData.filter(r => r.status === 'green').length, [processedData]);
+  const redCount = useMemo(() => processedData.filter(r => r.status === 'red').length, [processedData]);
+  const allGreen = useMemo(() => processedData.length > 0 && processedData.every(r => r.status === 'green'), [processedData]);
+
   // UI state
   const [showOnlyErrors, setShowOnlyErrors] = useState(false);
   const [showOnlyCorrect, setShowOnlyCorrect] = useState(false);
@@ -667,7 +230,6 @@ export default function App() {
   const handleLoadSession = async (sessionId: number) => {
     setIsAiProcessing(true); // Re-use for loading state
     setReviewPage(1);
-    console.log('[Resume] Loading session:', sessionId);
     try {
       const response = await authFetch(`/api/sessions/${sessionId}`);
       if (response.ok) {
@@ -686,7 +248,6 @@ export default function App() {
         const rawStep = fields.currentStep === 'lwin-check' ? 'map' : fields.currentStep;
         const st = (rawStep as Step) || 'review';
 
-        console.log('[Resume] Session data loaded:', { sessionId: data.id, step: st, dataType: dt, rowCount: rows.length });
 
         // Restore all maps
         setAutoFixedMap(fields.autoFixedMap || {});
@@ -736,7 +297,7 @@ export default function App() {
           }));
           setProcessedData(normalizedRows);
         } else if (Object.keys(map).length > 0) {
-          const processed = await processData(
+          await processData(
             reconstructedRaw,
             map,
             regionRefData,
@@ -746,7 +307,6 @@ export default function App() {
             new Set(fields.ignoredPriceWarnings || []),
             fields.calculationLogsMap || {}
           );
-          setProcessedData(processed);
         } else {
           setProcessedData(rows);
         }
@@ -825,11 +385,11 @@ export default function App() {
   const handleClearMasterData = (type: string) => {
     if (type === 'cellars') {
       setMasterCellars([]);
-      authFetch('/api/master/cellars', { method: 'DELETE' })
+      authFetch('/api/master/cellars', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ names: [] }) })
         .catch(e => console.error("Failed to clear master cellars", e));
     } else if (type === 'contacts' || type === 'private_clients' || type === 'trade_clients' || type === 'suppliers') {
       setMasterClients([]);
-      authFetch('/api/master/clients', { method: 'DELETE' })
+      authFetch('/api/master/clients', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ codes: [] }) })
         .catch(e => console.error("Failed to clear master clients", e));
     }
   };
@@ -896,7 +456,6 @@ export default function App() {
     
     // Re-validate
     const processed = await processData(newData, mapping, regionRefData, ignoredDuplicates, autoFixedMap, newManualEditsMap, ignoredPriceWarnings, calculationLogsMap);
-    setProcessedData(processed);
 
     if (currentSessionId) {
       handleBulkUpdateRows(processed.filter(r => rowIds.includes(r.id)));
@@ -983,9 +542,7 @@ export default function App() {
   // Marks the current import as finished: only allowed once every row is green (no errors), saves
   // master data (cellars/clients) and records the result in completedTasks (persisted to localStorage below).
   const handleMarkAsComplete = async () => {
-    // Only allow if all rows are green
-    const allReady = processedData.every(r => r.status === 'green');
-    if (!allReady) return;
+    if (!allGreen) return;
 
     // Add to master list first
     handleSaveMasterData();
@@ -1073,45 +630,6 @@ export default function App() {
   // (handles currency objects, quotes/commas/newlines) and joins into a header row + data rows.
   // extraColumns lets a caller append already-formatted columns after the schema's own fields
   // (used by handleExportErrors for its "Errors to Fix" and "__row_id__" columns).
-  const rowsToCsv = (
-    schema: { fields: { key: string; label: string }[] },
-    rows: any[],
-    extraColumns?: { label: string; value: (row: any) => string }[]
-  ): string => {
-    const escapeCsvValue = (raw: any): string => {
-      let val = raw;
-      if (typeof val === 'object' && val?.value !== undefined) val = `${val.currency} ${val.value}`;
-      const stringVal = String(val ?? '');
-      return (stringVal.includes(',') || stringVal.includes('"') || stringVal.includes('\n'))
-        ? `"${stringVal.replace(/"/g, '""')}"`
-        : stringVal;
-    };
-    const headers = [...schema.fields.map(f => f.label), ...(extraColumns?.map(c => c.label) ?? [])].join(',');
-    const dataRows = rows.map(row => [
-      ...schema.fields.map(field => escapeCsvValue(row[field.key])),
-      ...(extraColumns?.map(c => c.value(row)) ?? []),
-    ].join(','));
-    return [headers, ...dataRows].join('\n');
-  };
-
-  // Shared download trigger used by every export function below: wraps a Blob in a temporary,
-  // invisible anchor element, clicks it, then cleans up.
-  const downloadBlob = (blob: Blob, filename: string) => {
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
-  // Same as downloadBlob, for CSV text content specifically.
-  const downloadCsv = (csvContent: string, filename: string) => {
-    downloadBlob(new Blob([csvContent], { type: 'text/csv;charset=utf-8;' }), filename);
-  };
 
   const handleDownloadAllCompleted = async () => {
     const JSZip = (await import('jszip')).default;
@@ -1147,11 +665,6 @@ export default function App() {
   // Everything below is the wizard's business logic: export, corrections upload, file parsing/validation
   // (processData), column mapping, manual entry, and the AI-fix flow. The JSX render tree near the end of
   // this file wires its buttons/inputs up to these functions.
-
-  useEffect(() => {
-    // Auto-fix disabled as per user feedback "ai is messing up the file"
-    // We now provide a manual button instead
-  }, []);
 
   /**
    * Dynamically determines the active schema based on user input.
@@ -1308,8 +821,7 @@ export default function App() {
       }
 
       setRawData(newRawData);
-      const processed = await processData(newRawData, mapping);
-      setProcessedData(processed);
+      await processData(newRawData, mapping);
       e.target.value = '';
     };
     reader.readAsText(file);
@@ -1410,8 +922,7 @@ export default function App() {
       setRawData(newRawData);
     }
 
-    const processed = await processData(newRawData, newMapping);
-    setProcessedData(processed);
+    await processData(newRawData, newMapping);
     setSwapSourceKey(null);
     setSwapPickingTarget(false);
   };
@@ -1467,10 +978,9 @@ export default function App() {
     setMapping({});
 
     setIsValidating(true);
-    const processed = await processData(dataWithIds, {}, regionRefData, undefined, undefined, undefined, undefined, undefined,
+    await processData(dataWithIds, {}, regionRefData, undefined, undefined, undefined, undefined, undefined,
       (done, total) => setValidationProgress({ done, total }));
     setIsValidating(false);
-    setProcessedData(processed);
 
     authFetch('/api/sessions', {
       method: 'POST',
@@ -1565,7 +1075,6 @@ export default function App() {
       );
     }
     setIsValidating(false);
-    setProcessedData(processed);
 
     if (!currentSessionId) {
       handleSaveSession(processed, newMapping);
@@ -1733,7 +1242,6 @@ export default function App() {
       processed = await handleCalculationSmartFix(newData, mapping, true, nextManualEditsMap);
     } else {
       processed = await processData(newData, mapping, regionRefData, newIgnoredDups, autoFixedMap, nextManualEditsMap, newIgnoredPrice, calculationLogsMap);
-      setProcessedData(processed);
     }
 
     setEditingRowId(null);
@@ -1743,7 +1251,6 @@ export default function App() {
       const rowToSync = processed.find(r => r.id === updatedRow.id);
       if (rowToSync) {
         // Log what we are syncing
-        console.log('[Sync] Persisting row update to DB:', { id: updatedRow.id, keys: Object.keys(rowToSync.raw || {}) });
         
         authFetch(`/api/sessions/${currentSessionId}/rows/${updatedRow.id + 1}`, {
           method: 'PATCH',
@@ -1762,17 +1269,16 @@ export default function App() {
     newIgnored.add(id);
     setIgnoredDuplicates(newIgnored);
     // We use actual current state values instead of undefined/empty maps to ensure highlights persist
-    const processed = await processData(
+    await processData(
       rawData,
       mapping,
       regionRefData,
-      ignoredDuplicates,
+      newIgnored,
       autoFixedMap,
       manualEditsMap,
       ignoredPriceWarnings,
       calculationLogsMap
     );
-    setProcessedData(processed);
   };
 
   // Dismisses a flagged price-outlier warning on a row, mirroring handleIgnoreDuplicate above.
@@ -1781,7 +1287,7 @@ export default function App() {
     newIgnored.add(id);
     setIgnoredPriceWarnings(newIgnored);
     // We use actual current state values instead of undefined/empty maps to ensure highlights persist
-    const processed = await processData(
+    await processData(
       rawData,
       mapping,
       regionRefData,
@@ -1791,7 +1297,6 @@ export default function App() {
       newIgnored,
       calculationLogsMap
     );
-    setProcessedData(processed);
   };
 
   // Pops the last snapshot off the `history` stack (pushed by every edit/delete/swap above) and restores
@@ -1802,7 +1307,7 @@ export default function App() {
     setHistory(prev => prev.slice(0, -1));
     setRawData(previousState);
     // We must pass all current maps to maintain highlights after undo
-    const processed = await processData(
+    await processData(
       previousState,
       mapping,
       regionRefData,
@@ -1812,7 +1317,6 @@ export default function App() {
       ignoredPriceWarnings,
       calculationLogsMap
     );
-    setProcessedData(processed);
   };
 
   // Runs when step/history/handleUndo change: registers a global Ctrl/Cmd+Z listener that calls handleUndo() above, only while on the review step and history isn't empty.
@@ -1879,7 +1383,6 @@ export default function App() {
       ignoredPriceWarnings,
       nextCalcLogs
     );
-    setProcessedData(processed);
 
     if (currentSessionId) {
       handleBulkUpdateRows(processed, true);
@@ -1942,29 +1445,19 @@ export default function App() {
   // "Re-validate" button handler: treats the current data as the new baseline (originalRawData), clears
   // manual/auto-fix edit markers (but keeps dismissed duplicate/price warnings), then re-runs
   // handleCalculationSmartFix() below to recompute everything from scratch.
-  const handleRevalidate = () => {
+  const handleRevalidate = async () => {
     setIsAiProcessing(true);
-    // Simulate a brief re-validation delay for UX
-    setTimeout(async () => {
-      // Treat current data as the new "original" source of truth
+    try {
       setOriginalRawData(JSON.parse(JSON.stringify(rawData)));
-
-      // Clear edit markers — preserve ignored duplicates and price warnings
-      // as those were deliberate user decisions that should survive a re-validate
       setManualEditsMap({});
       setAutoFixedMap({});
-
-      // Re-process with cleared markers and run calculations
       const processed = await handleCalculationSmartFix(rawData, mapping, true);
-      setProcessedData(processed);
-
-      // Sync to backend if session exists
       if (currentSessionId) {
         handleBulkUpdateRows(processed, true);
       }
-      
+    } finally {
       setIsAiProcessing(false);
-    }, 600);
+    }
   };
 
   // Discards all AI/calculation fixes and manual edits by restoring rawData from originalRawData (the
@@ -1978,16 +1471,15 @@ export default function App() {
     setIgnoredPriceWarnings(new Set());
 
     const processed = await processData(
-      original, 
-      mapping, 
-      regionRefData, 
-      new Set(), 
-      {}, 
-      {}, 
+      original,
+      mapping,
+      regionRefData,
+      new Set(),
+      {},
+      {},
       new Set(),
       {}
     );
-    setProcessedData(processed);
 
     if (currentSessionId) {
       handleBulkUpdateRows(processed, true);
@@ -2109,8 +1601,6 @@ export default function App() {
     setCalculationLogsMap(newCalculationLogs);
     const processed = await processData(newData, activeMapping, regionRefData, ignoredDuplicates, newAutoFixedMap, overrideManualEdits || manualEditsMap, ignoredPriceWarnings, newCalculationLogs,
       (done, total) => setValidationProgress({ done, total }));
-    setProcessedData(processed);
-    
     if (!isAutoTrigger) setIsAiProcessing(false);
     return processed;
   };
@@ -2291,7 +1781,6 @@ export default function App() {
       currentCalcLogs
     );
 
-    setProcessedData(processed);
     if (currentSessionId) {
       handleBulkUpdateRows(processed);
     }
@@ -2324,9 +1813,6 @@ export default function App() {
   // synchronous pass, so a large file (thousands of rows) doesn't freeze the browser tab for the
   // duration of validation. onProgress (if given) is called after each chunk so callers can drive a
   // progress bar. This is why processData is async now — every call site below must await it.
-  const PROCESS_CHUNK_SIZE = 300;
-  const yieldToMain = () => new Promise<void>(resolve => setTimeout(resolve, 0));
-
   const processData = async (
     data: any[],
     map: Record<string, string>,
@@ -2338,956 +1824,27 @@ export default function App() {
     overrideCalcLogs?: Record<number, Record<string, string>>,
     onProgress?: (done: number, total: number) => void
   ): Promise<ProcessedRow[]> => {
-    const currentSchema = getCurrentSchema();
-    const seenRows = new Map<string, number>();
-    const seenCellarNames = new Map<string, number>();
-    const seenCellarCodes = new Map<string, number>();
-    const currentIgnored = ignoredDups || ignoredDuplicates;
-    const currentIgnoredPrice = ignoredPrice || ignoredPriceWarnings;
-    const currentAutoFixed = overrideAutoFixed || autoFixedMap;
-    const currentManualEdits = overrideManualEdits || manualEditsMap;
-    const currentCalcLogs = overrideCalcLogs || calculationLogsMap;
-
-    const processed: any[] = [];
-    for (let chunkStart = 0; chunkStart < data.length; chunkStart += PROCESS_CHUNK_SIZE) {
-    const chunkEnd = Math.min(chunkStart + PROCESS_CHUNK_SIZE, data.length);
-    for (let idx = chunkStart; idx < chunkEnd; idx++) {
-      const row = data[idx];
-      const result: any = { id: idx, raw: row, status: 'green', errors: [] as string[], fieldErrors: [] as string[] };
-      let hasError = false;
-      let hasWarning = false;
-
-      // Helper to get mapped value
-      const getValue = (key: string) => {
-        // Priority 1: Manual edits — only trusted when this row actually has a recorded edit for
-        // this field. Without the check, stale rawData writes from a previous edit session survive
-        // a Remap and override the new constant/column mapping even after manualEditsMap is cleared.
-        const schemaVal = row[key];
-        const wasManuallyEdited = (currentManualEdits[idx] || []).includes(key);
-        if (wasManuallyEdited && schemaVal !== undefined && schemaVal !== null && String(schemaVal).trim() !== '') return schemaVal;
-
-        // Priority 2: Check virtual calculation field
-        const aiCalcVal = row[`__ai_calculated_${key}__`];
-        if (aiCalcVal !== undefined && aiCalcVal !== null && String(aiCalcVal).trim() !== '') return aiCalcVal;
-
-        // Priority 3: Check the mapped original header (constant, concat, or column name)
-        const mappedKey = map[key];
-        if (mappedKey) {
-          if (mappedKey.startsWith('__const__')) return mappedKey.slice(9);
-          if (mappedKey.startsWith('__concat__')) {
-            try {
-              const def = JSON.parse(mappedKey.slice(10));
-              return (def.cols as string[]).map(c => String(row[c] ?? '')).filter(Boolean).join(def.sep);
-            } catch { return ''; }
-          }
-          const val = row[mappedKey];
-          if (val !== undefined && val !== null && String(val).trim() !== '') return val;
-        }
-
-        return '';
-      };
-
-      // A valid 7-digit LWIN alone identifies the wine downstream, so the wine-identity fields below
-      // (name, producer, vintage, country, region, type, sub-type — the same set the no-LWIN required-
-      // fields check further down treats as substitutable by LWIN) are not individually validated when
-      // present: their content isn't flagged even if it looks wrong, since LWIN is authoritative.
-      const lwinForBypassCheck = String(getValue('lwin7') || '').replace(/[^0-9]/g, '');
-      const hasValidLwin = (dataType === 'inventory' || dataType === 'client_reserves' || dataType === 'sales_orders' || dataType === 'purchase_orders')
-        && lwinForBypassCheck.length === 7;
-
-      // --- Field-Level Validation Loop ---
-      currentSchema.fields.forEach(field => {
-        let rawValue = getValue(field.key);
-        
-        // --- Sanitization: LWIN7 ---
-        // LWINs must be strictly numeric and max 7 digits.
-        if (field.key === 'lwin7') {
-           // Remove non-digits
-           let val = String(rawValue || '').replace(/[^0-9]/g, '');
-           // Truncate to 7 digits
-           if (val.length > 7) val = val.substring(0, 7);
-           
-           // Update the value in the result
-           rawValue = val;
-           result[field.key] = val;
-           
-           // If it was present but invalid (e.g. letters), rawValue is now cleaned.
-           // If it's empty after cleaning, it's missing.
-        }
-
-        const isMissing = rawValue === undefined || rawValue === null || String(rawValue).trim() === '';
-
-        // --- Validation: Region/Sub-Region against Reference Data ---
-        if ((field.key === 'region' || field.key === 'sub_region') && refData.length > 0 && !isMissing) {
-           // Skipped entirely when the row has a valid LWIN — see hasValidLwin above.
-           if (!hasValidLwin) {
-             const val = String(rawValue).trim().toLowerCase();
-             const rawCountry = getValue('country');
-             const country = String(rawCountry || '').trim().toLowerCase();
-
-             // Check if value exists in 'Region' column of reference data
-             const entry = refData.find(r => r.Region?.toLowerCase() === val);
-
-             if (!entry) {
-               result.status = 'red';
-               result.errors.push(`Invalid ${field.label}: '${rawValue}'. Not found in reference table.`);
-               hasError = true;
-               result.fieldErrors.push(field.key);
-             } else if (country) {
-               // Basic hierarchy check: is the country the parent or grandparent?
-               let isMatch = false;
-               let current = entry;
-               let depth = 0;
-               while (current && depth < 5) {
-                 if (current.Parent?.toLowerCase() === country || current.Region?.toLowerCase() === country) {
-                   isMatch = true;
-                   break;
-                 }
-                 const parentName = current.Parent;
-                 current = parentName ? refData.find(r => r.Region?.toLowerCase() === parentName.toLowerCase()) : null;
-                 depth++;
-               }
-
-               if (!isMatch) {
-                 result.status = 'red';
-                 result.errors.push(`${field.label} '${rawValue}' does not belong to country '${rawCountry}'.`);
-                 hasError = true;
-                 result.fieldErrors.push(field.key);
-               }
-             }
-           }
-           result[field.key] = rawValue;
-        }
-        else if (field.key === 'country' && refData.length > 0 && !isMissing) {
-           const normalized = normalizeCountry(String(rawValue));
-           const val = normalized.toLowerCase();
-           // Skipped when the row has a valid LWIN — see hasValidLwin above.
-           const isValid = hasValidLwin || refData.some(r => r.Region?.toLowerCase() === val && r.Type?.toLowerCase() === 'country');
-
-           if (!isValid) {
-             result.status = 'red';
-             result.errors.push(`Invalid Country: '${rawValue}'. Not found in reference table.`);
-             hasError = true;
-             result.fieldErrors.push(field.key);
-           }
-           result[field.key] = normalized;
-        }
-        
-        // --- Validation: Required Fields ---
-        else if (field.key === 'lwin7') {
-           // LWIN is optional in the schema — format is validated here if present, presence is validated per-row post-loop.
-           if (!isMissing && String(rawValue).length !== 7) {
-              result.status = 'red';
-              result.errors.push(`LWIN7 must be exactly 7 digits.`);
-              hasError = true;
-              result.fieldErrors.push(field.key);
-           }
-        } else if (field.required && isMissing) {
-          result.status = 'red';
-          result.errors.push(`Missing mandatory field: ${field.label}`);
-          hasError = true;
-          result.fieldErrors.push(field.key);
-        }
-
-        // --- Validation: Specific Data Types ---
-        
-        // Cellar Name: No restriction on special characters
-        if (field.key === 'cellar_name' && dataType === 'cellars') {
-           result[field.key] = String(rawValue || '');
-        }
-        // Currency: 3 or 4 letter code
-        else if (field.key === 'currency' && dataType === 'cellars') {
-           let val = String(rawValue || '').trim();
-           if (val === '£') val = 'GBP';
-           else if (val === '€') val = 'EUR';
-           else if (val === '$') val = 'USD';
-           val = val.toUpperCase();
-           if ((val.length < 3 || val.length > 4) && !isMissing) {
-              result.status = 'red';
-              result.errors.push(`Invalid Currency Code: ${rawValue}. Must be 3 or 4 letters (e.g. GBP, EUR)`);
-              hasError = true;
-              result.fieldErrors.push(field.key);
-           }
-           result[field.key] = val;
-        }
-        // Create as customer cellar: Y/N
-        else if (field.key === 'create_as_customer_cellar' && dataType === 'cellars') {
-           let val = String(rawValue || '').toUpperCase().trim();
-           if (val === 'YES') val = 'Y';
-           if (val === 'NO') val = 'N';
-           
-           if (val !== 'Y' && val !== 'N' && !isMissing) {
-              result.status = 'red';
-              result.errors.push(`Invalid value for ${field.label}: ${rawValue}. Must be Y or N.`);
-              hasError = true;
-              result.fieldErrors.push(field.key);
-           }
-           result[field.key] = val;
-        }
-        // Vintage: Year (1900-2026) or 'NV'
-        else if (field.key === 'vintage') {
-          const normVintage = normalizeVintage(rawValue);
-          // Invalid-format error skipped when the row has a valid LWIN — see hasValidLwin above.
-          if (normVintage === 'INVALID' && !hasValidLwin) {
-            result[field.key] = rawValue;
-            result.status = 'red';
-            result.errors.push(`Invalid vintage: ${rawValue}. Must be YYYY, NV, or 1`);
-            hasError = true;
-            result.fieldErrors.push(field.key);
-          } else {
-            result[field.key] = normVintage === 'INVALID' ? rawValue : normVintage;
-          }
-        }
-        // Bottle Size: Standardized to Centiliters (cl)
-        else if (field.key === 'size') {
-          const normSize = normalizeBottleSize(rawValue);
-          if (normSize === null && !isMissing) {
-            result[field.key] = rawValue; 
-            result.status = 'red';
-            result.errors.push(`Invalid size format: ${rawValue}. Must be in cl (e.g. 75cl)`);
-            hasError = true;
-            result.fieldErrors.push(field.key);
-          } else {
-            result[field.key] = normSize;
-          }
-        }
-        // Wine Names: Check for special characters (allowing Unicode letters/accents and standard/curly apostrophes)
-        else if (field.key === 'listing_wine_name' || field.key === 'display_wine_name') {
-           result[field.key] = String(rawValue || '');
-        }
-        // Case Size: 1-36
-        else if (field.key === 'case_size') {
-           const val = parseInt(String(rawValue || '0'), 10);
-           if (!isNaN(val)) {
-             if (val < 1 || val > 36) {
-               result.status = 'red';
-               result.errors.push(`Case size must be between 1 and 36. Found: ${val}`);
-               hasError = true;
-               result.fieldErrors.push(field.key);
-             }
-             result[field.key] = val;
-           } else if (!isMissing) {
-             result.status = 'red';
-             result.errors.push(`Invalid case size: ${rawValue}`);
-             hasError = true;
-             result.fieldErrors.push(field.key);
-           }
-        }
-        // Tax Status: IB or DP only
-        else if (field.key === 'tax_status') {
-           const val = String(rawValue || '').toUpperCase().trim();
-           if (val !== 'IB' && val !== 'DP' && !isMissing) {
-             result.status = 'red';
-             result.errors.push(`Tax Status must be 'IB' or 'DP'. Found: ${rawValue}`);
-             hasError = true;
-             result.fieldErrors.push(field.key);
-           }
-           result[field.key] = val;
-        }
-        // Wine Type: Fuzzy matching against known types
-        else if (field.key === 'type') {
-           const val = String(rawValue || '').trim();
-           if (val) {
-             const exactMatch = WINE_TYPES.find(t => t.toLowerCase() === val.toLowerCase());
-             if (exactMatch) {
-               result[field.key] = exactMatch; // Normalize
-             } else if (hasValidLwin) {
-               // Skipped when the row has a valid LWIN — see hasValidLwin above.
-               result[field.key] = val;
-             } else {
-               const closest = findClosestMatch(val, WINE_TYPES);
-               if (closest) {
-                 result.status = 'yellow';
-                 result.errors.push(`Invalid Type '${val}'. Did you mean '${closest}'?`);
-               } else {
-                 result.status = 'red';
-                 result.errors.push(`Invalid Type '${val}'. Must be one of: ${WINE_TYPES.join(', ')}`);
-                 hasError = true;
-                 result.fieldErrors.push(field.key);
-               }
-               result[field.key] = val;
-             }
-           } else {
-             result[field.key] = val;
-           }
-        }
-        // Sub-Type: Validated against Type
-        else if (field.key === 'sub_type') {
-           const val = String(rawValue || '').trim();
-           const currentType = result['type']; 
-
-           if (val) {
-             const exactMatch = WINE_SUBTYPES.find(t => t.toLowerCase() === val.toLowerCase());
-             let normalizedSubType = val;
-
-             if (exactMatch) {
-               normalizedSubType = exactMatch;
-               result[field.key] = exactMatch;
-             } else if (hasValidLwin) {
-               // Skipped when the row has a valid LWIN — see hasValidLwin above.
-               result[field.key] = val;
-             } else {
-               const closest = findClosestMatch(val, WINE_SUBTYPES);
-               if (closest) {
-                 result.status = 'yellow';
-                 result.errors.push(`Invalid Sub-Type '${val}'. Did you mean '${closest}'?`);
-               } else {
-                 result.status = 'red';
-                 result.errors.push(`Invalid Sub-Type '${val}'. Must be one of: ${WINE_SUBTYPES.join(', ')}`);
-                 hasError = true;
-                 result.fieldErrors.push(field.key);
-               }
-               result[field.key] = val;
-             }
-
-             // Check if Sub-Type is valid for the selected Type — skipped when the row has a valid LWIN.
-             if (!hasValidLwin && currentType && TYPE_TO_SUBTYPE[currentType]) {
-                const allowedSubTypes = TYPE_TO_SUBTYPE[currentType];
-                const isAllowed = allowedSubTypes.some(st => st.toLowerCase() === normalizedSubType.toLowerCase());
-
-                if (!isAllowed) {
-                   result.status = 'red';
-                   result.errors.push(`Sub-Type '${normalizedSubType}' is not valid for Type '${currentType}'. Allowed: ${allowedSubTypes.join(', ')}`);
-                   hasError = true;
-                   result.fieldErrors.push(field.key);
-                }
-             }
-           } else {
-             result[field.key] = val;
-           }
-        }
-        // Cellar Name: Check against valid list
-        else if (field.key === 'cellar_name') {
-           const val = String(rawValue || '').trim();
-           result[field.key] = val;
-        }
-        // Dates: Normalize to dd/mm/yyyy
-        else if (field.key.includes('date') || field.key.endsWith('_on')) {
-           const normDate = normalizeDate(rawValue);
-           if (normDate) {
-              result[field.key] = normDate;
-           } else if (!isMissing) {
-              result[field.key] = rawValue;
-              result.status = 'red';
-              result.errors.push(`Invalid date format: ${rawValue}. Must be dd/mm/yyyy`);
-              hasError = true;
-              result.fieldErrors.push(field.key);
-           }
-        }
-        // Generic Options Validation
-        else if (field.options) {
-          const val = String(rawValue || '').trim();
-          const cleanVal = val.replace(/\.$/, '');
-          const isValid = field.options.some(opt => 
-            opt.toLowerCase() === val.toLowerCase() || 
-            opt.replace(/\.$/, '').toLowerCase() === cleanVal.toLowerCase()
-          );
-          
-          if (!isValid && !isMissing) {
-            result.status = 'red';
-            result.errors.push(`Invalid ${field.label}: '${val}'. Please select from the accepted list.`);
-            hasError = true;
-            result.fieldErrors.push(field.key);
-          }
-          result[field.key] = val;
-        }
-        // Email Validation
-        else if (field.key === 'email' || field.key === 'main_contact_email') {
-           const val = String(rawValue || '').trim();
-           if (!isMissing) {
-             const atCount = (val.match(/@/g) || []).length;
-             if (atCount !== 1 || val.includes(' ')) {
-               result.status = 'red';
-               result.errors.push(`Invalid email: '${val}'. Must contain exactly one @ and no spaces.`);
-               hasError = true;
-               result.fieldErrors.push(field.key);
-             }
-           }
-           result[field.key] = val;
-        }
-        else if (field.key === 'address_line_1' || field.key === 'address_line_2' || field.key === 'address_line_3') {
-           const val = String(rawValue || '').trim();
-           if (!isMissing && /[^\p{L}0-9\s,\-.'\/#&()""]/u.test(val)) {
-             result.status = 'red';
-             result.errors.push(`${field.label} contains invalid characters: '${val}'`);
-             hasError = true;
-             result.fieldErrors.push(field.key);
-           }
-           result[field.key] = val;
-        }
-        else if (field.key === 'city') {
-           const val = String(rawValue || '').trim();
-           if (!isMissing && /[^\p{L}\s\-''.]/u.test(val)) {
-             result.status = 'red';
-             result.errors.push(`City contains invalid characters: '${val}'`);
-             hasError = true;
-             result.fieldErrors.push(field.key);
-           } else {
-             const countryVal = String(getValue('country') || '').trim();
-             if (countryVal && val.toLowerCase().includes(countryVal.toLowerCase()) && !isMissing) {
-               result.status = 'yellow';
-               result.errors.push(`City name '${val}' should not contain Country name '${countryVal}'`);
-               hasWarning = true;
-             }
-           }
-           result[field.key] = val;
-        }
-        else if (field.key === 'country') {
-           const val = String(rawValue || '').trim();
-           const cityVal = String(getValue('city') || '').trim();
-           const countyVal = String(getValue('county') || '').trim();
-           
-           if ((cityVal && val.toLowerCase().includes(cityVal.toLowerCase())) || 
-               (countyVal && val.toLowerCase().includes(countyVal.toLowerCase()))) {
-              if (!isMissing) {
-                result.status = 'yellow';
-                result.errors.push(`Country name '${val}' should not contain City/County name`);
-                hasWarning = true;
-              }
-           }
-           result[field.key] = val;
-        }
-        else if (field.key === 'phone' || field.key === 'mobile') {
-           let val = String(rawValue || '').trim();
-           // Remove alphabets and special chars, keep leading 0, maybe keep +?
-           // User said "Avoid alphabets and special characters", "ensure you are not losing the leading 0"
-           // Assuming we keep digits and maybe spaces/plus for readability, but strictly user said avoid special chars.
-           // Let's strip everything except digits.
-           const original = val;
-           val = val.replace(/[^0-9]/g, '');
-           if (val !== original && !isMissing) {
-              // If we stripped something, maybe we should warn or just autofix?
-              // User said "Avoid alphabets... ensure not losing leading 0".
-              // If original was "+44 123", new is "44123". Leading 0 might be lost if it was parsed as number before.
-              // But rawValue comes from file. If CSV/Excel, leading 0 might be gone already if not careful.
-              // We can't restore lost leading 0 easily without knowing locale.
-              // But we can ensure we don't strip it if it's there.
-              result.autoFixedFields = [...(result.autoFixedFields || []), field.key];
-           }
-           result[field.key] = val;
-        }
-        else if (field.key === 'forename' || field.key === 'surname') {
-           const val = String(rawValue || '').trim();
-           if (!isMissing && /[^\p{L}\s\-''.]/u.test(val)) {
-             result.status = 'red';
-             result.errors.push(`${field.label} contains invalid characters: '${val}'`);
-             hasError = true;
-             result.fieldErrors.push(field.key);
-           } else {
-             const suspicious = ['company', 'ltd', 'limited', 'plc', 'mr', 'mrs', 'miss', 'dr', 'sir'];
-             const found = suspicious.find(s => new RegExp(`\\b${s}\\b`, 'i').test(val));
-             if (found && !isMissing) {
-               result.status = 'yellow';
-               result.errors.push(`Possible invalid name (contains '${found}'). Ensure no company names or salutations.`);
-               hasWarning = true;
-             }
-           }
-           result[field.key] = val;
-        }
-        else if (field.key === 'currency' || field.key === 'so_currency' || field.key === 'po_currency') {
-           let val = String(rawValue || '').trim();
-           if (val === '£') val = 'GBP';
-           else if (val === '€') val = 'EUR';
-           else if (val === '$') val = 'USD';
-           result[field.key] = val.toUpperCase() || rawValue;
-        }
-        else if (field.key === 'cost' || field.key === 'total' || field.key === 'price' || field.key.startsWith('exc_vat') || field.key === 'case_cost_price' || field.key === 'case_selling_price') {
-          const normPrice = normalizeCurrency(rawValue);
-          if (normPrice.value === null && !isMissing) {
-            result[field.key] = rawValue; // Keep original value
-            result.status = 'red';
-            result.errors.push(`Invalid price format for ${field.label}: ${rawValue}`);
-            hasError = true;
-            result.fieldErrors.push(field.key);
-          } else {
-            result[field.key] = normPrice.value;
-          }
-        } 
-        else if (['abv', 'case_size', 'case_quantity', 'total_quantity', 'exchange_rate'].includes(field.key)) {
-          const val = parseFloat(String(rawValue).replace(/[^0-9.]/g, ''));
-          result[field.key] = isNaN(val) ? (isMissing ? '' : rawValue) : val;
-          if (isNaN(val) && !isMissing) {
-            result.status = 'red';
-            result.errors.push(`Invalid numeric format for ${field.label}: ${rawValue}`);
-            hasError = true;
-            result.fieldErrors.push(field.key);
-          } else if (
-            (dataType === 'inventory' || dataType === 'client_reserves') &&
-            (field.key === 'case_quantity' || field.key === 'total_quantity') &&
-            !isNaN(val) && val === 0
-          ) {
-            result.status = 'red';
-            result.errors.push(`${field.label} cannot be zero.`);
-            hasError = true;
-            result.fieldErrors.push(field.key);
-          }
-        }
-        // Account code / cellar code: letters, digits, spaces, hyphens, underscores, slashes, dots
-        else if (field.key === 'account_code' || field.key === 'cellar_code') {
-           const val = String(rawValue || '').trim();
-           if (!isMissing && /[^A-Za-z0-9\s\-_\/.]/.test(val)) {
-             result.status = 'red';
-             result.errors.push(`${field.label} contains invalid characters: '${val}'`);
-             hasError = true;
-             result.fieldErrors.push(field.key);
-           }
-           result[field.key] = val;
-        }
-        // County: letters, spaces, hyphens, apostrophes, dots
-        else if (field.key === 'county') {
-           const val = String(rawValue || '').trim();
-           if (!isMissing && /[^\p{L}\s\-''.]/u.test(val)) {
-             result.status = 'red';
-             result.errors.push(`County contains invalid characters: '${val}'`);
-             hasError = true;
-             result.fieldErrors.push(field.key);
-           }
-           result[field.key] = val;
-        }
-        // Company name: letters, digits, spaces, common business punctuation
-        else if (field.key === 'company_name') {
-           const val = String(rawValue || '').trim();
-           if (!isMissing && /[^\p{L}0-9\s\-.,''()&\/]/u.test(val)) {
-             result.status = 'red';
-             result.errors.push(`Company Name contains invalid characters: '${val}'`);
-             hasError = true;
-             result.fieldErrors.push(field.key);
-           }
-           result[field.key] = val;
-        }
-        // Cellar name: letters, digits, spaces, hyphens, commas, apostrophes, dots
-        else if (field.key === 'cellar_name') {
-           const val = String(rawValue || '').trim();
-           if (!isMissing && /[^\p{L}0-9\s\-,.']/u.test(val)) {
-             result.status = 'red';
-             result.errors.push(`Cellar Name contains invalid characters: '${val}'`);
-             hasError = true;
-             result.fieldErrors.push(field.key);
-           }
-           result[field.key] = val;
-        }
-        // Supplier name: same rules as company name
-        else if (field.key === 'supplier_name') {
-           const val = String(rawValue || '').trim();
-           if (!isMissing && /[^\p{L}0-9\s\-.,''()&\/]/u.test(val)) {
-             result.status = 'red';
-             result.errors.push(`Supplier contains invalid characters: '${val}'`);
-             hasError = true;
-             result.fieldErrors.push(field.key);
-           }
-           result[field.key] = val;
-        }
-        // PO number: alphanumeric plus hyphens, underscores, slashes, dots
-        else if (field.key === 'po_number') {
-           const val = String(rawValue || '').trim();
-           if (!isMissing && /[^A-Za-z0-9\s\-_\/.]/.test(val)) {
-             result.status = 'red';
-             result.errors.push(`PO Number contains invalid characters: '${val}'`);
-             hasError = true;
-             result.fieldErrors.push(field.key);
-           }
-           result[field.key] = val;
-        }
-        // Post code: letters, digits, spaces, hyphens
-        else if (field.key === 'post_code') {
-           const val = String(rawValue || '').trim();
-           if (!isMissing && /[^A-Za-z0-9\s\-]/.test(val)) {
-             result.status = 'red';
-             result.errors.push(`Post Code contains invalid characters: '${val}'`);
-             hasError = true;
-             result.fieldErrors.push(field.key);
-           }
-           result[field.key] = val;
-        }
-        else {
-          result[field.key] = rawValue || '';
-        }
-      });
-
-      // Post-loop LWIN Validation
-      if (dataType === 'inventory' || dataType === 'client_reserves' || dataType === 'sales_orders' || dataType === 'purchase_orders') {
-        const lwinVal = result['lwin7'];
-        const isLwinMissing = !lwinVal || String(lwinVal).trim() === '';
-
-        if (isLwinMissing) {
-            const isFieldPresent = (key: string) => {
-               const val = result[key];
-               return val !== undefined && val !== null && String(val).trim() !== '';
-            };
-
-            const missingFields: string[] = [];
-            if (!isFieldPresent('listing_wine_name') && !isFieldPresent('display_wine_name')) missingFields.push('Wine Name');
-            if (!isFieldPresent('producer')) missingFields.push('Producer');
-            if (!isFieldPresent('vintage')) missingFields.push('Vintage');
-            if (!isFieldPresent('country')) missingFields.push('Country');
-            if (!isFieldPresent('region')) missingFields.push('Region');
-            if (!isFieldPresent('type')) missingFields.push('Wine Type');
-
-            if (missingFields.length > 0) {
-               result.status = 'red';
-               const msg = `No LWIN — required fields missing: ${missingFields.join(', ')}`;
-               if (!result.errors.includes(msg)) result.errors.push(msg);
-               hasError = true;
-               result.fieldErrors.push('lwin7');
-            }
-        }
-      }
-
-      // --- Master Data Validation ---
-      if ((dataType === 'inventory' || dataType === 'client_reserves' || dataType === 'sales_orders' || dataType === 'purchase_orders') && result['cellar_name']) {
-        const cellarName = String(result['cellar_name']).trim();
-        if (masterCellars.length > 0 && !masterCellars.includes(cellarName)) {
-          result.status = 'red';
-          result.errors.push(`Cellar '${cellarName}' not found in Master List. Please load Cellars first.`);
-          hasError = true;
-          result.fieldErrors.push('cellar_name');
-        }
-      }
-
-      if ((dataType === 'client_reserves' || dataType === 'sales_orders' || dataType === 'purchase_orders') && result['account_code']) {
-        const accountCode = String(result['account_code']).trim();
-        if (masterClients.length > 0 && !masterClients.includes(accountCode)) {
-          result.status = 'red';
-          result.errors.push(`Account Code '${accountCode}' not found. Please load Private Clients, Trade Clients, or Suppliers lists first.`);
-          hasError = true;
-          result.fieldErrors.push('account_code');
-        }
-      }
-
-      // --- Duplicate Detection ---
-      // Create a unique fingerprint for the row based on key fields.
-      // If the fingerprint is seen before, mark as duplicate.
-      // Rows flagged here drive the DuplicateComparisonModal / guided review queue (startDuplicateReview
-      // above); dismissing one adds its id to ignoredDuplicates (currentIgnored here) so it's skipped next pass.
-      let duplicateFingerprint = '';
-      if (dataType === 'contacts' || dataType === 'private_clients' || dataType === 'trade_clients' || dataType === 'suppliers') {
-         duplicateFingerprint = String(result['account_code'] || '').trim();
-      } else if (dataType === 'cellars') {
-         // Check for unique cellar name and cellar code
-         const name = String(result['cellar_name'] || '').trim().toLowerCase();
-         const code = String(result['cellar_code'] || '').trim().toLowerCase();
-         
-         if (name && seenCellarNames.has(name) && !currentIgnored.has(idx)) {
-            result.status = 'red';
-            result.errors.push(`Duplicate Cellar Name detected: ${result['cellar_name']}`);
-            hasError = true;
-            result.fieldErrors.push('cellar_name');
-         } else if (name) {
-            seenCellarNames.set(name, idx);
-         }
-
-         if (code && seenCellarCodes.has(code) && !currentIgnored.has(idx)) {
-            result.status = 'red';
-            result.errors.push(`Duplicate Cellar Code detected: ${result['cellar_code']}`);
-            hasError = true;
-            result.fieldErrors.push('cellar_code');
-         } else if (code) {
-            seenCellarCodes.set(code, idx);
-         }
-         
-         // Use combined fingerprint for general duplicate detection if needed, 
-         // but name/code uniqueness is more specific here.
-         duplicateFingerprint = `${name}|${code}`;
-      } else if (dataType === 'inventory' || dataType === 'client_reserves') {
-         // Rotation number (SKU) is the lot identifier — different rotation = different entry, never a duplicate.
-         // Only flag when rotation_number is present and matches; skip the check entirely when it's absent.
-         const rotNum = String(result['rotation_number'] || '').trim();
-         if (rotNum) {
-            const fields = ['rotation_number', 'lwin7', 'vintage', 'case_size', 'size', 'tax_status'];
-            if (dataType === 'client_reserves') fields.push('account_code');
-            duplicateFingerprint = fields.map(k => String(result[k] || '')).join('|');
-         } else {
-            duplicateFingerprint = ''; // no rotation number → can't confirm identity → skip
-         }
-      } else if (dataType === 'sales_orders') {
-         duplicateFingerprint = ['so_number', 'lwin7', 'vintage', 'case_size', 'size']
-          .map(k => String(result[k] || '')).join('|');
-      } else if (dataType === 'purchase_orders') {
-         duplicateFingerprint = ['po_number', 'lwin7', 'vintage', 'case_size', 'size']
-          .map(k => String(result[k] || '')).join('|');
-      } else {
-         duplicateFingerprint = ['lwin7', 'vintage', 'case_size', 'size', 'tax_status']
-          .map(k => String(result[k] || '')).join('|');
-      }
-      
-      // Skip when: no fingerprint (rotation number absent for inventory/client_reserves), or client_reserves missing account_code.
-      const skipDuplicateCheck = !duplicateFingerprint ||
-        (dataType === 'client_reserves' && !String(result['account_code'] || '').trim());
-
-      if (!skipDuplicateCheck && seenRows.has(duplicateFingerprint) && !currentIgnored.has(idx)) {
-        result.isDuplicate = true;
-        result.duplicateOf = seenRows.get(duplicateFingerprint);
-        if (dataType === 'contacts' || dataType === 'private_clients' || dataType === 'trade_clients' || dataType === 'suppliers') {
-           result.errors.push(`Duplicate Account Code detected: ${duplicateFingerprint}`);
-        } else if (dataType === 'inventory') {
-           result.errors.push('Suspect duplicate detected (Same Rotation #, LWIN, Vintage, Size, Tax Status)');
-        } else if (dataType === 'client_reserves') {
-           result.errors.push('Suspect duplicate detected (Same Account Code, Rotation #, LWIN, Vintage, Size, Tax Status)');
-        } else if (dataType === 'sales_orders') {
-           result.errors.push('Suspect duplicate detected (Same SO Number, LWIN, Vintage, Case Size, Bottle Size)');
-        } else if (dataType === 'purchase_orders') {
-           result.errors.push('Suspect duplicate detected (Same PO Number, LWIN, Vintage, Case Size, Bottle Size)');
-        } else {
-           result.errors.push('Suspect duplicate detected (Same LWIN, Vintage, Size, Tax Status)');
-        }
-        hasWarning = true; // Duplicates are warnings unless they also have errors
-      } else if (!skipDuplicateCheck) {
-        seenRows.set(duplicateFingerprint, idx);
-      }
-
-      // --- Custom Columns (user-defined extra output columns from SchemaMapper) ---
-      Object.entries(map || {}).forEach(([fieldKey, header]) => {
-        if (!fieldKey.startsWith('__custom_col__') || !header) return;
-        if (header.startsWith('__const__')) { result[fieldKey] = header.slice(9); }
-        else if (header.startsWith('__concat__')) {
-          try { const def = JSON.parse(header.slice(10)); result[fieldKey] = (def.cols as string[]).map((c: string) => String(row[c] ?? '')).filter(Boolean).join(def.sep); }
-          catch { result[fieldKey] = ''; }
-        } else { result[fieldKey] = row[header] !== undefined && row[header] !== null ? String(row[header]) : ''; }
-      });
-
-      // --- Status Assignment (Preliminary) ---
-      if (hasError) result.status = 'red';
-      else if (hasWarning || result.isDuplicate) result.status = 'yellow';
-      else result.status = 'green';
-
-      // --- Apply Overrides ---
-      if (currentAutoFixed[idx]) {
-        result.autoFixedFields = currentAutoFixed[idx];
-      }
-      if (currentManualEdits[idx]) {
-        result.manualEdits = currentManualEdits[idx];
-      }
-      if (currentCalcLogs[idx]) {
-        result.calculationLogs = currentCalcLogs[idx];
-      }
-
-      processed.push(result);
+    const myId = ++processDataLatestId.current;
+    const result = await runProcessData(
+      data, map, dataType, getCurrentSchema(), refData,
+      ignoredDups ?? ignoredDuplicates,
+      overrideAutoFixed ?? autoFixedMap,
+      overrideManualEdits ?? manualEditsMap,
+      ignoredPrice ?? ignoredPriceWarnings,
+      overrideCalcLogs ?? calculationLogsMap,
+      masterCellars,
+      masterClients,
+      onProgress
+    );
+    if (processDataLatestId.current === myId) {
+      setProcessedData(result);
     }
-    onProgress?.(chunkEnd, data.length);
-    if (chunkEnd < data.length) await yieldToMain();
-    }
-
-    // --- Price Anomaly Detection (Inventory and Client Reserves Only) ---
-    // Runs as a second pass over the already-processed rows (needs the full set to compute medians/
-    // group averages). Flagged rows drive the same guided-review modal as duplicates (startPriceReview
-    // above, priceOutlier* fields), and dismissals are tracked in ignoredPriceWarnings (currentIgnoredPrice here).
-    if (dataType === 'inventory' || dataType === 'client_reserves') {
-      // 1. Collect Valid Unit Prices
-      // Unit Price = exc_vat_case / case_size (or case_cost_price for client_reserves)
-      // We only consider rows that have valid numeric values for these fields
-      const validPrices: number[] = [];
-      const rowPrices = new Map<number, number>(); // Map row ID to calculated unit price
-      const groupedPrices = new Map<string, { total: number, count: number, prices: number[], rowIds: number[] }>(); // Group by LWIN+Vintage
-      const priceToRowId = new Map<number, number>(); // Map unit price back to row ID (for median reference)
-
-      processed.forEach(row => {
-        const priceField = dataType === 'client_reserves' ? 'case_cost_price' : 'exc_vat_case';
-        const price = parseFloat(row[priceField]);
-        const caseSize = parseInt(row['case_size']);
-        const size = parseFloat(row['size']); // Bottle size in cl, e.g. 75
-
-        // Basic validity check for price calculation
-        if (!isNaN(price) && !isNaN(caseSize) && caseSize > 0 && price > 0) {
-           // Calculate normalized price per bottle (unit price)
-           // If we want to be super precise, we divide by (case_size * size). 
-           // But usually "Unit Price" implies "Price per Bottle" in the trade context, assuming standard 75cl.
-           // If sizes vary (magnums vs halves), we MUST normalize by volume.
-           // Let's normalize to "Price per 75cl Bottle Equivalent".
-           // Formula: (Price / CaseSize) * (75 / Size)
-           // Example: Case of 6 Magnums (150cl) for £600.
-           // Price per bottle (Magnum) = £100.
-           // Price per 75cl equiv = £100 * (75/150) = £50.
-           
-           let unitPrice = price / caseSize;
-           if (!isNaN(size) && size > 0) {
-              unitPrice = unitPrice * (75 / size);
-           }
-           
-           validPrices.push(unitPrice);
-           rowPrices.set(row.id, unitPrice);
-           priceToRowId.set(unitPrice, row.id);
-
-           // Grouping for Consistency Check
-           // Key: LWIN7 + Vintage (or Name + Vintage if LWIN missing)
-           const key = `${row['lwin7'] || row['listing_wine_name'] || 'unknown'}_${row['vintage']}`;
-           if (!groupedPrices.has(key)) {
-             groupedPrices.set(key, { total: 0, count: 0, prices: [], rowIds: [] });
-           }
-           const group = groupedPrices.get(key)!;
-           group.total += unitPrice;
-           group.count += 1;
-           group.prices.push(unitPrice);
-           group.rowIds.push(row.id);
-        }
-      });
-
-      if (validPrices.length > 0) {
-        // 2. Global Outlier Detection
-        // "if all the stuff is around X gbp, why one specific line is x times 50?"
-        // Calculate Median
-        validPrices.sort((a, b) => a - b);
-        const mid = Math.floor(validPrices.length / 2);
-        const medianPrice = validPrices.length % 2 !== 0 ? validPrices[mid] : (validPrices[mid - 1] + validPrices[mid]) / 2;
-        const medianRowId = priceToRowId.get(validPrices[mid]);
-
-        // Threshold: > 50x Median (User said "x times 50", taking it literally as a heuristic for massive error)
-        // Also check for extremely low prices? < Median / 50?
-        const highThreshold = medianPrice * 50;
-        
-        // 3. Apply Checks
-        processed.forEach(row => {
-           if (currentIgnoredPrice.has(row.id)) return;
-           
-           const unitPrice = rowPrices.get(row.id);
-           if (unitPrice !== undefined) {
-              // Check Global Outlier
-              if (unitPrice > highThreshold) {
-                 if (row.status !== 'red') row.status = 'yellow';
-                 row.errors.push(`Potential Price Error: Value is significantly higher (>50x) than dataset median.`);
-                 row.isPriceOutlier = true;
-                 row.priceOutlierType = 'global';
-                 row.priceOutlierRef = medianPrice;
-                 row.priceOutlierRefRowId = medianRowId;
-              }
-
-              // Check Group Consistency
-              // "if two same product and same vintage cost around a price, why the third one... costs much more or much less?"
-              const key = `${row['lwin7'] || row['listing_wine_name'] || 'unknown'}_${row['vintage']}`;
-              const group = groupedPrices.get(key);
-              
-              if (group && group.count >= 3) {
-                 // We have enough data points to compare
-                 const avgPrice = group.total / group.count;
-                 
-                 // If this specific row deviates significantly from the group average
-                 // Threshold: > 2x Average or < 0.5x Average (User said "much more or much less")
-                 if (unitPrice > avgPrice * 2) {
-                    if (row.status !== 'red') row.status = 'yellow';
-                    row.errors.push(`Price Inconsistency: Significantly higher than other entries for this wine.`);
-                    row.isPriceOutlier = true;
-                    row.priceOutlierType = 'high';
-                    row.priceOutlierRef = avgPrice;
-                    row.priceOutlierRefRowId = group.rowIds.find(id => id !== row.id);
-                 } else if (unitPrice < avgPrice * 0.5) {
-                    if (row.status !== 'red') row.status = 'yellow';
-                    row.errors.push(`Price Inconsistency: Significantly lower than other entries for this wine.`);
-                    row.isPriceOutlier = true;
-                    row.priceOutlierType = 'low';
-                    row.priceOutlierRef = avgPrice;
-                    row.priceOutlierRefRowId = group.rowIds.find(id => id !== row.id);
-                 }
-              }
-           }
-        });
-      }
-    }
-
-    // LWIN conflict detection: for inventory and client_reserves, if two rows share the same LWIN7
-    // but have conflicting non-empty values in descriptive fields, both rows are flagged red.
-    // A field only counts as a conflict when BOTH rows have a non-empty value that disagrees —
-    // a blank field on one side is not a conflict (LWIN rows often leave descriptive fields empty).
-    if (dataType === 'inventory' || dataType === 'client_reserves') {
-      const LWIN_CONFLICT_FIELDS: { key: string; label: string }[] = [
-        { key: 'listing_wine_name', label: 'Wine Name' },
-        { key: 'display_wine_name', label: 'Display Wine Name' },
-        { key: 'producer', label: 'Producer' },
-        { key: 'country', label: 'Country' },
-        { key: 'region', label: 'Region' },
-        { key: 'sub_region', label: 'Sub Region' },
-      ];
-
-      // Group rows by their lwin7 value
-      const lwinGroups = new Map<string, typeof processed>();
-      processed.forEach(row => {
-        const lwin = String(row['lwin7'] || '').trim();
-        if (!lwin) return;
-        if (!lwinGroups.has(lwin)) lwinGroups.set(lwin, []);
-        lwinGroups.get(lwin)!.push(row);
-      });
-
-      lwinGroups.forEach(rows => {
-        if (rows.length < 2) return;
-
-        const conflictLabels: string[] = [];
-        LWIN_CONFLICT_FIELDS.forEach(({ key, label }) => {
-          // Gather distinct non-empty values across the group (case-insensitive)
-          const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-          const seen = new Set<string>();
-          rows.forEach(r => {
-            const v = normalize(String(r[key] || ''));
-            if (v) seen.add(v);
-          });
-          if (seen.size > 1) conflictLabels.push(label);
-        });
-
-        if (conflictLabels.length === 0) return;
-
-        const msg = `LWIN conflict: this LWIN is shared with another row that has different ${conflictLabels.join(', ')}. Verify the LWIN is correct and fix or remove the conflicting row.`;
-        rows.forEach(row => {
-          row.status = 'red';
-          row.errors.push(msg);
-          if (!row.fieldErrors.includes('lwin7')) row.fieldErrors.push('lwin7');
-        });
-      });
-    }
-
-    setProcessedData(processed);
-    return processed;
+    return result;
   };
 
   // Generates and downloads a blank Excel template for the current data type, using SCHEMAS for column
   // headers and highlighting mandatory fields in orange.
-  const handleDownloadTemplate = async () => {
-    const ExcelJS = (await import('exceljs')).default;
-    const fields = SCHEMAS[dataType].fields;
-
-    // Create workbook and worksheet
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('Template');
-
-    // Add headers
-    const headerRow = worksheet.addRow(fields.map(f => f.label));
-
-    // Style headers
-    headerRow.eachCell((cell, colNumber) => {
-      const field = fields[colNumber - 1];
-      
-      // Basic styling for all headers
-      cell.font = { bold: true };
-      cell.border = {
-        bottom: { style: 'thin' }
-      };
-
-      // Highlight mandatory fields
-      if (field.required) {
-        cell.fill = {
-          type: 'pattern',
-          pattern: 'solid',
-          fgColor: { argb: 'FFFFE0B2' } // Light Orange/Yellow (Tailwind Orange-100 approx)
-        };
-        // Add a note or comment if possible, or just rely on color
-        cell.note = 'Mandatory Field';
-      }
-    });
-
-    // Adjust column widths
-    worksheet.columns.forEach(column => {
-      column.width = 20;
-    });
-
-    // Generate buffer
-    const buffer = await workbook.xlsx.writeBuffer();
-    
-    // Create blob and download
-    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `${dataType}_template.xlsx`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
+  const handleDownloadTemplate = () => downloadTemplate(dataType);
 
   // Finds the in-progress (not completed, not archived) saved session for a given data type — used by
   // renderDataTypeButton below to decide whether a data-type pill shows a "resume" state.
@@ -3327,7 +1884,6 @@ export default function App() {
     // We determine the target type either from the argument (card click) or current state (header button click)
     const targetDataType = typeOverride || dataType;
     
-    console.log('[App] handleStartNew triggered', { specificSessionId, targetDataType });
     
     // 1. Determine which session we are archiving. 
     let sessionIdToArchive = specificSessionId || currentSessionId;
@@ -3337,13 +1893,11 @@ export default function App() {
       const activeSession = getActiveSessionForType(targetDataType);
       if (activeSession) {
         sessionIdToArchive = activeSession.id;
-        console.log('[App] Found active session to archive:', sessionIdToArchive);
       }
     }
     
     if (sessionIdToArchive) {
       try {
-        console.log('[App] Archiving session in DB:', sessionIdToArchive);
         const resp = await authFetch(`/api/sessions/${sessionIdToArchive}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -3354,23 +1908,19 @@ export default function App() {
           const errorText = await resp.text();
           console.error('[App] Server-side archive failed:', resp.status, errorText);
         } else {
-          console.log('[App] Server-side archive successful');
         }
       } catch (err) {
         console.error('[App] Network error archiving session:', err);
       }
     } else {
-      console.log('[App] No session found to archive for type:', targetDataType);
     }
 
     // --- Reset ALL local state to ensure a clean slate ---
-    console.log('[App] Resetting all local UI state...');
     
     // 1. Clear completion flag for this specific type
     if (targetDataType) {
       const newCompleted = { ...completedTasks };
       if (newCompleted[targetDataType]) {
-        console.log('[StartNew] Clearing completed flag for:', targetDataType);
         delete newCompleted[targetDataType];
         setCompletedTasks(newCompleted);
         try {
@@ -3414,127 +1964,8 @@ export default function App() {
     
     // Final refresh to ensure UI reflects DB state
     await loadSessions(); 
-    console.log('[App] handleStartNew finished successfully');
   };
 
-  // Renders one data-type selector pill (e.g. "Inventory", "Contacts") shown in the upload step's header,
-  // including its resume/completed dropdown (uses getActiveSessionForType/getCompletedSessionForType above).
-  const renderDataTypeButton = (type: DataType) => {
-    const isCompleted = !!completedTasks[type];
-    const activeSession = getActiveSessionForType(type);
-    const isInProgress = !!activeSession;
-
-    return (
-      <div key={type} className="relative group/btn">
-        <button
-          onClick={() => { 
-            if (isInProgress || isCompleted) {
-              setOpenCompletedDropdown(openCompletedDropdown === type ? null : type);
-              setDataType(type);
-              setValidationError(null);
-            } else {
-              setDataType(type); 
-              setValidationError(null); 
-              setOpenCompletedDropdown(null);
-            }
-          }}
-          className={`px-5 py-2 rounded-full text-xs font-semibold tracking-wider transition-all border-[1.5px] flex items-center gap-2 ${
-            dataType === type
-              ? (isInProgress
-                  ? 'bg-amber-500 text-white border-amber-500 shadow-md scale-105'
-                  : isCompleted
-                    ? 'bg-[#3d8a5a] text-white border-[#3d8a5a] shadow-md scale-105'
-                    : 'bg-[#2d97af] text-white border-[#2d97af] shadow-md scale-105')
-              : (isInProgress
-                  ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
-                  : isCompleted
-                    ? 'bg-[#edf7f1] text-[#3d8a5a] border-[#4a9a68] hover:bg-emerald-50'
-                    : 'bg-white text-[#5a7080] border-[#e0e8ef] hover:border-[#2d97af] hover:text-[#2d97af]')
-          }`}
-        >
-          {isCompleted && !isInProgress && <CheckCircle2 size={12} />}
-          {isInProgress && <RefreshCcw size={12} className="animate-spin-slow" />}
-          {SCHEMAS[type]?.label || type}
-          {isInProgress && (
-            <span className="ml-1 text-[8px] font-black opacity-60">RESUME</span>
-          )}
-          {((type === 'cellars' && masterCellars.length > 0) || (['contacts', 'private_clients', 'trade_clients', 'suppliers'].includes(type) && masterClients.length > 0)) && (
-            <div className={`w-1.5 h-1.5 rounded-full animate-pulse ${isInProgress ? 'bg-amber-400' : 'bg-emerald-500'}`} />
-          )}
-        </button>
-
-        {openCompletedDropdown === type && (
-          <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-48 bg-white rounded-2xl shadow-2xl border border-black/5 p-2 z-50 animate-in fade-in slide-in-from-top-2">
-            {isInProgress && (
-              <button
-                onClick={() => handleLoadSession(activeSession.id)}
-                className="w-full flex items-center gap-2 px-4 py-2.5 text-[10px] font-bold uppercase tracking-wider text-amber-700 hover:bg-amber-50 rounded-xl transition-colors mb-1"
-              >
-                <RefreshCcw size={14} />
-                Resume Progress
-              </button>
-            )}
-            
-            {isCompleted && !isInProgress && (() => {
-              const cs = getCompletedSessionForType(type);
-              return cs ? (
-                <button
-                  onClick={() => handleReopenSession(cs.id, type)}
-                  className="w-full flex items-center gap-2 px-4 py-2.5 text-[10px] font-bold uppercase tracking-wider text-emerald-700 hover:bg-emerald-50 rounded-xl transition-colors mb-1"
-                >
-                  <Play size={14} />
-                  Reopen Session
-                </button>
-              ) : null;
-            })()}
-
-            {isCompleted && (
-              <button
-                onClick={() => handleExportCompleted(type)}
-                className="w-full flex items-center gap-2 px-4 py-2.5 text-[10px] font-bold uppercase tracking-wider text-emerald-700 hover:bg-emerald-50 rounded-xl transition-colors mb-1"
-              >
-                <Download size={14} />
-                Export Last
-              </button>
-            )}
-
-            <button
-              onClick={() => handleStartNew(activeSession?.id, type)}
-              className="w-full flex items-center gap-2 px-4 py-2.5 text-[10px] font-bold uppercase tracking-wider text-rose-600 hover:bg-rose-50 rounded-xl transition-colors"
-            >
-              <Plus size={14} />
-              Start New
-            </button>
-          </div>
-        )}
-
-        {((type === 'cellars' && masterCellars.length > 0) || (['contacts', 'private_clients', 'trade_clients', 'suppliers'].includes(type) && masterClients.length > 0)) && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              handleClearMasterData(type === 'cellars' ? 'cellars' : 'contacts');
-            }}
-            className="absolute -top-2 -right-2 p-1.5 bg-rose-500 text-white rounded-full shadow-lg opacity-0 group-hover/btn:opacity-100 transition-opacity hover:bg-rose-600 z-10"
-            title="Clear Master List"
-          >
-            <Trash2 size={10} />
-          </button>
-        )}
-        {type === 'cellars' && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowAddLocationModal(true);
-            }}
-            className="absolute -top-2 -left-2 p-1.5 bg-black text-white rounded-full shadow-lg opacity-0 group-hover/btn:opacity-100 transition-opacity hover:bg-black/70 z-10"
-            title="Add location manually"
-          >
-            <Plus size={10} />
-          </button>
-        )}
-      </div>
-    );
-  };
 
   // Returns to the upload step without archiving anything (unlike handleStartNew) — just navigation, used by the logo click and back buttons.
   const goHome = () => {
@@ -3581,154 +2012,27 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#f3f6f8] text-[#1b3040] font-sans">
-      {/* --- Header: logo/home link, step indicator, user info, admin/logout/rules buttons, and (only
-          during the review step) the Mark Complete / Start New / Export Errors / Upload Corrections /
-          Export Clean CSV action bar (handleMarkAsComplete, handleStartNew, handleExportErrors,
-          handleUploadCorrections, handleExport — all defined above). --- */}
-      <header className="sticky top-0 z-50 bg-white border-b border-[#e0e8ef] shadow-[0_1px_4px_rgba(27,48,64,0.08)]">
-        <div className="max-w-[98vw] mx-auto h-16 px-8 flex items-center justify-between gap-8">
-          {/* Brand */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            className="flex items-center gap-3 cursor-pointer flex-shrink-0"
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); goHome(); }}
-          >
-            <span className="text-xl font-serif tracking-tight text-[#1b3040]">
-              <span className="italic font-medium text-[#2d97af]">Druid</span>
-            </span>
-            <span className="hidden sm:block text-[10px] font-bold uppercase tracking-widest text-[#96adb8]">Wine Onboarding</span>
-          </motion.div>
-
-          {/* Step pips */}
-          <div className="flex items-center gap-1">
-            {(['Upload', 'Map', 'Review'] as const).map((label, idx) => {
-              const n = idx + 1;
-              const current = step === 'upload' ? 1 : (step === 'map' || step === 'manual') ? 2 : 3;
-              const done = n < current;
-              const active = n === current;
-              return (
-                <React.Fragment key={n}>
-                  <div className="flex flex-col items-center gap-0.5">
-                    <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold border-2 transition-all ${
-                      done ? 'bg-[#3d8a5a] border-[#3d8a5a] text-white' :
-                      active ? 'bg-[#2d97af] border-[#2d97af] text-white' :
-                      'bg-white border-[#e0e8ef] text-[#96adb8]'
-                    }`}>
-                      {done ? <CheckCircle2 size={12} /> : n}
-                    </div>
-                    <span className={`text-[9px] font-semibold hidden sm:block ${active ? 'text-[#1b3040]' : done ? 'text-[#3d8a5a]' : 'text-[#96adb8]'}`}>{label}</span>
-                  </div>
-                  {idx < 2 && <div className={`w-8 h-0.5 mb-3 ${done ? 'bg-[#2d97af]' : 'bg-[#e0e8ef]'}`} />}
-                </React.Fragment>
-              );
-            })}
-          </div>
-
-          {/* Right: user + actions */}
-          <div className="flex items-center gap-2 flex-shrink-0">
-            {currentUser && (
-              <div className="text-right mr-2">
-                <p className="text-sm font-semibold text-[#1b3040]">{currentUser.forename || currentUser.display_name}</p>
-                <p className="text-[10px] text-[#96adb8] uppercase tracking-wider">{currentUser.organisation_name}</p>
-              </div>
-            )}
-            {currentUser?.user_access === 'admin' && (
-              <button
-                onClick={() => setShowAdmin(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-white rounded-lg border border-[#e0e8ef] text-xs font-medium text-[#5a7080] hover:border-[#2d97af] hover:text-[#2d97af] transition-colors"
-              >
-                Admin
-              </button>
-            )}
-            <button
-              onClick={() => logout({ logoutParams: { returnTo: window.location.origin } })}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-white rounded-lg border border-[#e0e8ef] text-xs font-medium text-[#5a7080] hover:border-[#2d97af] hover:text-[#2d97af] transition-colors"
-            >
-              Log out
-            </button>
-            <button
-              onClick={() => setIsRulesModalOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2d97af] rounded-lg text-xs font-medium text-white hover:bg-[#1b7d94] transition-colors"
-            >
-              <HelpCircle className="w-3.5 h-3.5" />
-              Rules
-            </button>
-
-            {step === 'review' && (
-              <div className="flex gap-2 ml-2">
-                {processedData.every(r => r.status === 'green') && (
-                  <button
-                    onClick={handleMarkAsComplete}
-                    className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider bg-[#3d8a5a] text-white px-4 py-1.5 rounded-full shadow-sm hover:bg-[#2d7a4a] transition-all flex-shrink-0"
-                  >
-                    <CheckCircle2 size={13} />
-                    Mark Complete
-                  </button>
-                )}
-                <button
-                  onClick={() => { setManualEditsMap({}); setAutoFixedMap({}); setCalculationLogsMap({}); setStep('map'); }}
-                  className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider bg-white px-3 py-1.5 rounded-full border border-[#e0e8ef] shadow-sm hover:border-[#2d97af] transition-colors"
-                  title="Go back to column mapping — raw data is kept, manual edits are cleared"
-                >
-                  <Edit2 size={13} />
-                  Remap
-                </button>
-                <button
-                  onClick={handleStartNew}
-                  className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider bg-white px-3 py-1.5 rounded-full border border-[#e0e8ef] shadow-sm hover:border-[#2d97af] transition-colors"
-                >
-                  <RefreshCcw size={13} />
-                  Start New
-                </button>
-                {showOnlyCorrect && processedData.some(r => r.status === 'green') && (
-                  <button
-                    onClick={handleExportCorrect}
-                    className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider bg-emerald-600 text-white px-4 py-1.5 rounded-full shadow-sm hover:bg-emerald-700 transition-all"
-                  >
-                    <Download size={13} />
-                    Export Correct ({processedData.filter(r => r.status === 'green').length})
-                  </button>
-                )}
-                {showOnlyErrors && processedData.some(r => r.status === 'red') && (
-                  <>
-                    <input
-                      type="file"
-                      accept=".csv"
-                      ref={correctionsInputRef}
-                      onChange={handleUploadCorrections}
-                      className="hidden"
-                    />
-                    <button
-                      onClick={handleExportErrors}
-                      className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider bg-rose-600 text-white px-4 py-1.5 rounded-full shadow-sm hover:bg-rose-700 transition-all"
-                    >
-                      <Download size={13} />
-                      Export Errors ({processedData.filter(r => r.status === 'red').length})
-                    </button>
-                    <button
-                      onClick={() => correctionsInputRef.current?.click()}
-                      className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider bg-white text-rose-600 border border-rose-200 px-4 py-1.5 rounded-full shadow-sm hover:bg-rose-50 transition-all"
-                    >
-                      <Upload size={13} />
-                      Upload Fixes
-                    </button>
-                  </>
-                )}
-                <button
-                  onClick={handleExport}
-                  className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider bg-[#2d97af] text-white px-4 py-1.5 rounded-full shadow-sm hover:bg-[#1b7d94] transition-all"
-                >
-                  <Download size={13} />
-                  Export CSV
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      </header>
+      <AppHeader
+        step={step}
+        currentUser={currentUser}
+        allGreen={allGreen}
+        greenCount={greenCount}
+        redCount={redCount}
+        showOnlyCorrect={showOnlyCorrect}
+        showOnlyErrors={showOnlyErrors}
+        correctionsInputRef={correctionsInputRef}
+        onGoHome={goHome}
+        onShowAdmin={() => setShowAdmin(true)}
+        onLogout={() => logout({ logoutParams: { returnTo: window.location.origin } })}
+        onShowRules={() => setIsRulesModalOpen(true)}
+        onMarkComplete={handleMarkAsComplete}
+        onRemap={() => { setManualEditsMap({}); setAutoFixedMap({}); setCalculationLogsMap({}); setStep('map'); }}
+        onStartNew={handleStartNew}
+        onExportCorrect={handleExportCorrect}
+        onExportErrors={handleExportErrors}
+        onUploadCorrections={handleUploadCorrections}
+        onExport={handleExport}
+      />
 
       <main className="max-w-[98vw] mx-auto min-h-[calc(100vh-4rem)] flex flex-col justify-center px-8 py-10">
         <AnimatePresence mode="wait">
@@ -3738,198 +2042,29 @@ export default function App() {
               data type, a "session in progress" / "session completed" card (handleLoadSession,
               handleReopenSession, handleExportCompleted, handleStartNew). */}
           {step === 'upload' && (
-            <div className="space-y-8">
-              <div className="space-y-10 max-w-4xl mx-auto flex flex-col items-center">
-                {/* Row 1: master listings & clients */}
-                <div className="flex flex-col items-center gap-3 w-full animate-in fade-in slide-in-from-bottom-4 duration-500">
-                  <span className="text-[10px] uppercase font-sans tracking-[0.2em] text-[#1b3040]/40 font-semibold mb-1">
-                    Master Files & Contacts
-                  </span>
-                  <div className="flex flex-wrap justify-center gap-4">
-                    {(['private_clients', 'trade_clients', 'suppliers', 'cellars'] as DataType[]).map((type) => renderDataTypeButton(type))}
-                  </div>
-                </div>
-
-                {/* Subdued separator line */}
-                <div className="h-[1px] w-24 bg-[#e0e8ef] my-1"></div>
-
-                {/* Row 2: transactional & stock data */}
-                <div className="flex flex-col items-center gap-3 w-full animate-in fade-in slide-in-from-bottom-4 duration-700">
-                  <span className="text-[10px] uppercase font-sans tracking-[0.2em] text-[#1b3040]/40 font-semibold mb-1">
-                    Transactions & Stock
-                  </span>
-                  <div className="flex flex-wrap justify-center gap-4">
-                    {(['inventory', 'client_reserves', 'sales_orders', 'purchase_orders'] as DataType[]).map((type) => renderDataTypeButton(type))}
-                  </div>
-                </div>
-              </div>
-              <div className="flex justify-center gap-3 mb-8">
-                {!(getActiveSessionForType(dataType) || completedTasks[dataType]) && (
-                  <button
-                    onClick={handleDownloadTemplate}
-                    className="group flex items-center gap-3 px-5 py-3 bg-white border border-[#e0e8ef] rounded-xl shadow-sm hover:border-[#2d97af] hover:shadow-md transition-all"
-                  >
-                    <div className="p-2 bg-[#eaf5f9] rounded-lg group-hover:bg-[#d5eef5] transition-colors">
-                      <Download size={16} className="text-[#2d97af]" />
-                    </div>
-                    <p className="text-xs font-semibold uppercase tracking-wider text-[#5a7080] group-hover:text-[#2d97af]">
-                      Download {SCHEMAS[dataType].label} Template
-                    </p>
-                  </button>
-                )}
-                {Object.keys(completedTasks).length >= 2 && (
-                  <button
-                    onClick={handleDownloadAllCompleted}
-                    className="group flex items-center gap-3 px-5 py-3 bg-emerald-50 border border-emerald-200 rounded-xl shadow-sm hover:border-emerald-300 hover:shadow-md transition-all"
-                  >
-                    <div className="p-2 bg-emerald-100 rounded-lg group-hover:bg-emerald-200 transition-colors">
-                      <Download size={16} className="text-emerald-700" />
-                    </div>
-                    <p className="text-xs font-bold uppercase tracking-wider text-emerald-700">
-                      Download All Completed ({Object.keys(completedTasks).length} files)
-                    </p>
-                  </button>
-                )}
-              </div>
-
-              {validationError && (
-                <motion.div 
-                  initial={{ opacity: 0, y: -10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="max-w-2xl mx-auto p-4 bg-rose-50 border border-rose-100 rounded-2xl flex items-center gap-3 text-rose-800"
-                >
-                  <AlertCircle className="w-5 h-5 flex-shrink-0" />
-                  <div className="flex-1">
-                    <p className="text-sm font-medium">{validationError}</p>
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
-                      <button 
-                        onClick={() => setDataType('cellars')}
-                        className="text-xs font-bold uppercase tracking-wider hover:underline"
-                      >
-                        Switch to Cellars Import
-                      </button>
-                      <button 
-                        onClick={() => setDataType('private_clients')}
-                        className="text-xs font-bold uppercase tracking-wider hover:underline text-indigo-700"
-                      >
-                        Switch to Private Clients
-                      </button>
-                      <button 
-                        onClick={() => setDataType('trade_clients')}
-                        className="text-xs font-bold uppercase tracking-wider hover:underline text-indigo-700"
-                      >
-                        Switch to Trade Clients
-                      </button>
-                      <button 
-                        onClick={() => setDataType('suppliers')}
-                        className="text-xs font-bold uppercase tracking-wider hover:underline text-indigo-700"
-                      >
-                        Switch to Suppliers
-                      </button>
-                    </div>
-                  </div>
-                  <button onClick={() => setValidationError(null)} className="p-1 hover:bg-rose-100 rounded-full transition-colors">
-                    <X className="w-4 h-4" />
-                  </button>
-                </motion.div>
-              )}
-
-              {/* Only show upload zone if NO active session and NOT marked as completed */}
-              {!(getActiveSessionForType(dataType) || completedTasks[dataType]) ? (
-                <div className="space-y-4">
-                  <FileUploader onUpload={handleUpload} />
-                  <div className="max-w-2xl mx-auto flex items-center gap-4">
-                    <div className="flex-1 h-px bg-[#e0e8ef]" />
-                    <span className="text-xs text-[#96adb8] uppercase tracking-widest">or</span>
-                    <div className="flex-1 h-px bg-[#e0e8ef]" />
-                  </div>
-                  <div className="max-w-2xl mx-auto flex justify-center">
-                    <button
-                      onClick={handleOpenManualEntry}
-                      className="group flex items-center gap-3 px-5 py-3 bg-white border border-[#e0e8ef] rounded-xl shadow-sm hover:border-[#2d97af] hover:shadow-md transition-all"
-                    >
-                      <div className="p-2 bg-[#eaf5f9] rounded-lg group-hover:bg-[#d5eef5] transition-colors">
-                        <Plus size={16} className="text-[#2d97af]" />
-                      </div>
-                      <p className="text-xs font-semibold uppercase tracking-wider text-[#5a7080] group-hover:text-[#2d97af]">
-                        Start from Empty
-                      </p>
-                    </button>
-                  </div>
-                </div>
-              ) : (() => {
-                const activeSession = getActiveSessionForType(dataType);
-                const completedSession = getCompletedSessionForType(dataType);
-                const isCompleted = !activeSession && !!completedTasks[dataType];
-                return isCompleted ? (
-                  <div className="max-w-2xl mx-auto p-12 bg-white rounded-3xl border border-dashed border-emerald-200 flex flex-col items-center text-center">
-                    <div className="w-16 h-16 bg-emerald-50 rounded-full flex items-center justify-center mb-6 text-emerald-600">
-                      <CheckCircle2 size={32} />
-                    </div>
-                    <h3 className="text-xl font-serif font-medium mb-2">Session Completed</h3>
-                    <p className="text-sm text-black/60 mb-2 max-w-sm">
-                      {SCHEMAS[dataType].label} data has been marked as complete.
-                    </p>
-                    {completedTasks[dataType]?.completedAt && (
-                      <p className="text-xs text-black/40 mb-8">
-                        Completed {new Date(completedTasks[dataType].completedAt).toLocaleString()}
-                      </p>
-                    )}
-                    <div className="flex gap-4">
-                      {completedSession && (
-                        <button
-                          onClick={() => handleReopenSession(completedSession.id, dataType)}
-                          className="px-6 py-3 bg-emerald-600 text-white rounded-xl font-bold uppercase tracking-widest hover:bg-emerald-700 transition-all flex items-center gap-2"
-                        >
-                          <Play size={16} />
-                          Reopen Session
-                        </button>
-                      )}
-                      <button
-                        onClick={() => handleExportCompleted(dataType)}
-                        className="px-6 py-3 bg-white border border-black/10 text-black/70 rounded-xl font-bold uppercase tracking-widest hover:bg-black/5 transition-all flex items-center gap-2"
-                      >
-                        <Download size={16} />
-                        Export
-                      </button>
-                      <button
-                        onClick={() => handleStartNew(undefined, dataType)}
-                        className="px-6 py-3 bg-white border border-rose-200 text-rose-600 rounded-xl font-bold uppercase tracking-widest hover:bg-rose-50 transition-all flex items-center gap-2"
-                      >
-                        <Plus size={16} />
-                        Start New
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="max-w-2xl mx-auto p-12 bg-white rounded-3xl border border-dashed border-black/10 flex flex-col items-center text-center">
-                    <div className="w-16 h-16 bg-amber-50 rounded-full flex items-center justify-center mb-6 text-amber-600">
-                      <RefreshCcw className="animate-spin-slow" size={32} />
-                    </div>
-                    <h3 className="text-xl font-serif font-medium mb-2">Session in Progress</h3>
-                    <p className="text-sm text-black/60 mb-8 max-w-sm">
-                      You have an active session for {SCHEMAS[dataType].label}.
-                    </p>
-                    <div className="flex gap-4">
-                      <button
-                        onClick={() => { if (activeSession) handleLoadSession(activeSession.id); }}
-                        className="px-6 py-3 bg-amber-500 text-white rounded-xl font-bold uppercase tracking-widest hover:bg-amber-600 transition-all flex items-center gap-2"
-                      >
-                        <RefreshCcw size={16} />
-                        Resume Progress
-                      </button>
-                      <button
-                        onClick={() => handleStartNew(activeSession?.id, dataType)}
-                        className="px-6 py-3 bg-white border border-rose-200 text-rose-600 rounded-xl font-bold uppercase tracking-widest hover:bg-rose-50 transition-all flex items-center gap-2"
-                      >
-                        <Plus size={16} />
-                        Start New
-                      </button>
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
+            <UploadStep
+              dataType={dataType}
+              completedTasks={completedTasks}
+              masterCellars={masterCellars}
+              masterClients={masterClients}
+              openCompletedDropdown={openCompletedDropdown}
+              validationError={validationError}
+              onSetDataType={setDataType}
+              onSetOpenCompletedDropdown={setOpenCompletedDropdown}
+              onSetValidationError={setValidationError}
+              getActiveSessionForType={getActiveSessionForType}
+              getCompletedSessionForType={getCompletedSessionForType}
+              onLoadSession={handleLoadSession}
+              onReopenSession={handleReopenSession}
+              onExportCompleted={handleExportCompleted}
+              onStartNew={handleStartNew}
+              onClearMasterData={handleClearMasterData}
+              onShowAddLocation={() => setShowAddLocationModal(true)}
+              onDownloadTemplate={handleDownloadTemplate}
+              onDownloadAllCompleted={handleDownloadAllCompleted}
+              onUpload={handleUpload}
+              onOpenManualEntry={handleOpenManualEntry}
+            />
           )}
 
           {/* ===================== MANUAL ENTRY STEP ===================== */}
@@ -3987,675 +2122,54 @@ export default function App() {
               startPriceReview, all above), and further below the actual data table bound to processedData
               with inline editing via startEditingCell/handleRowUpdate. */}
           {step === 'review' && (
-            <div className="space-y-6">
-              <AnimatePresence>
-                {pendingBulkAction && (
-                  <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none p-4">
-                    <motion.div 
-                      initial={{ opacity: 0, scale: 0.9, y: 20 }}
-                      animate={{ opacity: 1, scale: 1, y: 0 }}
-                      exit={{ opacity: 0, scale: 0.9, y: 20 }}
-                      className="bg-indigo-600 text-white p-6 rounded-[2.5rem] flex flex-col md:flex-row items-center gap-6 shadow-2xl overflow-hidden max-w-2xl w-full pointer-events-auto border-4 border-white/20"
-                    >
-                      <div className="flex items-center gap-4 flex-1">
-                        <div className="p-4 bg-white/20 rounded-2xl shrink-0">
-                          <Sparkles size={32} className="text-white" />
-                        </div>
-                        <div>
-                          <p className="text-xs font-black uppercase tracking-[0.2em] opacity-80 mb-1">Smart Bulk Fix Detected</p>
-                          <p className="text-lg font-medium leading-tight">
-                            Found <span className="font-extrabold underline decoration-2 underline-offset-4">{pendingBulkAction.rowIds.length}</span> other rows with the same {pendingBulkAction.field.replace('_', ' ')} issue ('{pendingBulkAction.oldValue}').
-                          </p>
-                          <p className="text-sm mt-2 opacity-90">
-                            Would you like to update them all to <span className="font-bold italic text-yellow-300">'{pendingBulkAction.newValue}'</span>?
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-3 shrink-0">
-                        <button 
-                          onClick={() => setPendingBulkAction(null)}
-                          className="px-6 py-3 text-sm font-bold uppercase tracking-widest hover:bg-white/10 rounded-2xl transition-colors"
-                        >
-                          Dismiss
-                        </button>
-                        <button 
-                          onClick={applyBulkFix}
-                          className="px-8 py-3 bg-white text-indigo-600 rounded-2xl text-sm font-black uppercase tracking-widest shadow-[0_8px_20px_rgba(255,255,255,0.3)] hover:scale-105 active:scale-95 transition-all"
-                        >
-                          Update All
-                        </button>
-                      </div>
-                    </motion.div>
-                  </div>
-                )}
-              </AnimatePresence>
-              <div className="flex flex-col md:flex-row gap-4 items-stretch">
-                <div className="flex-1 grid grid-cols-4 gap-4">
-                  <button
-                    onClick={() => { setShowOnlyErrors(false); setShowOnlyEdited(false); setShowOnlyCorrect(false); setReviewPage(1); }}
-                    className={`p-6 rounded-3xl border shadow-sm transition-all text-left ${
-                      !showOnlyErrors && !showOnlyEdited && !showOnlyCorrect
-                        ? 'bg-black border-black text-white ring-4 ring-black/10'
-                        : 'bg-white border-black/5 text-black hover:bg-black/[0.02]'
-                    }`}
-                  >
-                    <p className={`text-[10px] uppercase tracking-widest mb-1 ${!showOnlyErrors && !showOnlyEdited && !showOnlyCorrect ? 'text-white/60' : 'text-black/40'}`}>Total Rows</p>
-                    <p className="text-3xl font-serif">{processedData.length}</p>
-                  </button>
-
-                  <button
-                    onClick={() => { setShowOnlyErrors(false); setShowOnlyEdited(false); setShowOnlyCorrect(c => !c); setReviewPage(1); }}
-                    className={`p-6 rounded-3xl border shadow-sm transition-all text-left ${
-                      showOnlyCorrect
-                        ? 'bg-emerald-500 border-emerald-600 text-white ring-4 ring-emerald-100'
-                        : 'bg-emerald-50 border-emerald-100 text-emerald-700 hover:bg-emerald-100'
-                    }`}
-                  >
-                    <p className={`text-[10px] uppercase tracking-widest mb-1 ${showOnlyCorrect ? 'text-white/60' : 'text-emerald-600/60'}`}>Ready</p>
-                    <p className="text-3xl font-serif">
-                      {processedData.filter(r => r.status === 'green').length}
-                    </p>
-                  </button>
-
-                  <button
-                    onClick={() => { setShowOnlyErrors(true); setShowOnlyEdited(false); setShowOnlyCorrect(false); setReviewPage(1); }}
-                    className={`p-6 rounded-3xl border shadow-sm transition-all text-left ${
-                      showOnlyErrors
-                        ? 'bg-rose-500 border-rose-600 text-white ring-4 ring-rose-100'
-                        : 'bg-rose-50 border-rose-100 text-rose-700 hover:bg-rose-100'
-                    }`}
-                  >
-                    <p className={`text-[10px] uppercase tracking-widest mb-1 ${showOnlyErrors ? 'text-white/60' : 'text-rose-600/60'}`}>Issues</p>
-                    <p className="text-3xl font-serif">
-                      {processedData.filter(r => r.status === 'red').length}
-                    </p>
-                  </button>
-
-                  <button
-                    onClick={() => { setShowOnlyErrors(false); setShowOnlyEdited(true); setShowOnlyCorrect(false); setReviewPage(1); }}
-                    className={`p-6 rounded-3xl border shadow-sm transition-all text-left ${
-                      showOnlyEdited 
-                        ? 'bg-orange-500 border-orange-600 text-white ring-4 ring-orange-100' 
-                        : 'bg-orange-50 border-orange-100 text-orange-700 hover:bg-orange-100'
-                    }`}
-                  >
-                    <p className={`text-[10px] uppercase tracking-widest mb-1 ${showOnlyEdited ? 'text-white/60' : 'text-orange-600/60'}`}>Manual Fixes</p>
-                    <p className="text-3xl font-serif">
-                      {Object.keys(manualEditsMap).length}
-                    </p>
-                  </button>
-                </div>
-                
-                <div className="bg-white p-2 rounded-3xl border border-black/5 shadow-sm flex items-center gap-1">
-                  <button
-                    onClick={() => { setShowOnlyErrors(false); setShowOnlyCorrect(false); setReviewPage(1); }}
-                    className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-2xl text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      !showOnlyErrors && !showOnlyCorrect ? 'bg-black text-white shadow-lg' : 'text-black/40 hover:bg-black/5'
-                    }`}
-                  >
-                    <LayoutGrid size={14} />
-                    Full File
-                  </button>
-                  <button
-                    onClick={() => { setShowOnlyCorrect(true); setShowOnlyErrors(false); setReviewPage(1); }}
-                    className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-2xl text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      showOnlyCorrect ? 'bg-emerald-500 text-white shadow-lg' : 'text-black/40 hover:bg-black/5'
-                    }`}
-                  >
-                    <CheckCircle2 size={14} />
-                    Correct Only
-                  </button>
-                  <button
-                    onClick={() => { setShowOnlyErrors(true); setShowOnlyCorrect(false); setReviewPage(1); }}
-                    className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-2xl text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      showOnlyErrors ? 'bg-rose-500 text-white shadow-lg' : 'text-black/40 hover:bg-black/5'
-                    }`}
-                  >
-                    <Filter size={14} />
-                    Issues Only
-                  </button>
-                </div>
-              </div>
-
-              <div className="bg-white rounded-none border border-[#dadce0] shadow-sm overflow-hidden flex flex-col h-full">
-                <div className="flex items-center justify-between px-4 py-2 bg-[#f8f9fa] border-b border-[#dadce0]">
-                  <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-2">
-                      {processedData.some(r => r.status === 'red') && (
-                        <button
-                          onClick={handleAiSmartFix}
-                          disabled={isAiProcessing}
-                          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all border ${
-                            isAiProcessing
-                              ? 'bg-amber-50 text-amber-400 border-amber-200 cursor-not-allowed'
-                              : 'bg-amber-500 text-white border-amber-600 hover:bg-amber-600 shadow-sm active:scale-95'
-                          }`}
-                        >
-                          <Sparkles size={12} className={isAiProcessing ? 'animate-pulse' : ''} />
-                          AI Smart Fix
-                        </button>
-                      )}
-
-                      {(() => {
-                        const hasPending = Object.keys(manualEditsMap).length > 0 || Object.keys(autoFixedMap).length > 0;
-                        const noIssues = processedData.filter(r => r.status === 'red').length === 0;
-                        const isReadyToCommit = hasPending && noIssues && !isAiProcessing;
-                        return (
-                          <button
-                            onClick={handleRevalidate}
-                            disabled={isAiProcessing}
-                            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all border ${
-                              isAiProcessing
-                                ? 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed'
-                                : isReadyToCommit
-                                  ? 'bg-emerald-500 text-white border-emerald-600 hover:bg-emerald-600 shadow-md shadow-emerald-100 animate-pulse active:scale-95'
-                                  : 'bg-white text-black border-black/10 hover:bg-black/5 shadow-sm active:scale-95'
-                            }`}
-                          >
-                            <RotateCw size={12} className={isAiProcessing ? 'animate-spin' : ''} />
-                            {isReadyToCommit ? '→ Review Changes' : 'Review Change'}
-                          </button>
-                        );
-                      })()}
-
-                      {Object.keys(autoFixedMap).length > 0 && (
-                        <button
-                          onClick={handleRevertAiFixes}
-                          disabled={isAiProcessing}
-                          className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-white text-rose-600 border border-rose-200 hover:bg-rose-50 transition-all active:scale-95"
-                        >
-                          <RefreshCcw size={12} />
-                          Undo AI Changes
-                        </button>
-                      )}
-                      
-                      {history.length > 0 && (
-                        <button
-                          onClick={handleUndo}
-                          disabled={isAiProcessing}
-                          className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-white text-indigo-600 border border-indigo-200 hover:bg-indigo-50 transition-all active:scale-95"
-                          title="Undo last manual edit (Ctrl+Z)"
-                        >
-                          <RotateCcw size={12} />
-                          Undo Edit
-                        </button>
-                      )}
-                      {processedData.some(r => r.isDuplicate) && (
-                        <button
-                          onClick={startDuplicateReview}
-                          className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 transition-all active:scale-95"
-                        >
-                          <Copy size={12} />
-                          Review Duplicates ({processedData.filter(r => r.isDuplicate).length})
-                        </button>
-                      )}
-                      {processedData.some(r => r.isPriceOutlier) && (
-                        <button
-                          onClick={startPriceReview}
-                          className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 transition-all active:scale-95"
-                        >
-                          <Calculator size={12} />
-                          Review Prices ({processedData.filter(r => r.isPriceOutlier).length})
-                        </button>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded-full bg-rose-500"></div>
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-black/40">Errors</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded-full bg-sky-400"></div>
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-black/40">AI Calculated</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded-full bg-amber-400"></div>
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-black/40">AI Fixed / Warning</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded-full bg-emerald-500"></div>
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-black/40">Valid</span>
-                    </div>
-                  </div>
-                  <div className="text-[10px] font-medium text-black/40 italic">
-                    * Click any cell to edit. AI fixed cells are highlighted in yellow.
-                  </div>
-                </div>
-
-                {/* The review data table itself: one column per schema field, one row per processedData
-                    entry. Header cells wire up the column-swap flow (swapSourceKey/swapPickingTarget
-                    state + handleSwapColumns above); body cells wire up inline editing (editingCell state,
-                    startEditingCell/handleRowUpdate above) and show status highlighting (red = error,
-                    orange = manual edit, amber/sky = AI/calculated fix). */}
-                <div className="overflow-auto flex-1 h-[75vh]">
-                  <table className="w-full text-left border-collapse min-w-max">
-                    <thead className="sticky top-0 bg-[#f8f9fa] z-10">
-                      <tr className="text-[11px] font-medium text-[#5f6368] border-b border-[#dadce0]">
-                        <th className="w-12 px-2 py-1.5 text-center border-r border-[#dadce0] bg-[#f8f9fa] sticky left-0 z-20"></th>
-                        {SCHEMAS[dataType].fields.map(field => {
-                          const isSource = swapSourceKey === field.key;
-                          const isTarget = swapPickingTarget && swapSourceKey !== field.key;
-                          return (
-                            <th
-                              key={field.key}
-                              className={`px-3 py-1.5 border-r border-[#dadce0] font-normal min-w-[150px] select-none group/hdr ${
-                                isSource ? 'bg-indigo-50 text-indigo-700' :
-                                isTarget ? 'cursor-pointer hover:bg-indigo-50 hover:text-indigo-700' : ''
-                              }`}
-                              onClick={() => {
-                                if (swapPickingTarget && !isSource) handleSwapColumns(field.key);
-                              }}
-                            >
-                              <div className="flex items-center gap-1.5">
-                                <span>{field.label}</span>
-                                {isSource && !swapPickingTarget && (
-                                  <>
-                                    <button
-                                      onClick={e => { e.stopPropagation(); setSwapPickingTarget(true); }}
-                                      className="px-1.5 py-0.5 text-[10px] bg-indigo-100 text-indigo-700 rounded hover:bg-indigo-200 whitespace-nowrap"
-                                    >
-                                      Swap with…
-                                    </button>
-                                    <button
-                                      onClick={e => { e.stopPropagation(); setSwapSourceKey(null); }}
-                                      className="px-1 py-0.5 text-[10px] text-black/30 hover:text-black/60 rounded"
-                                    >
-                                      ✕
-                                    </button>
-                                  </>
-                                )}
-                                {isSource && swapPickingTarget && (
-                                  <button
-                                    onClick={e => { e.stopPropagation(); setSwapSourceKey(null); setSwapPickingTarget(false); }}
-                                    className="px-1.5 py-0.5 text-[10px] bg-rose-100 text-rose-600 rounded hover:bg-rose-200 whitespace-nowrap"
-                                  >
-                                    Cancel
-                                  </button>
-                                )}
-                                {isTarget && (
-                                  <span className="px-1.5 py-0.5 text-[10px] bg-indigo-100 text-indigo-600 rounded whitespace-nowrap">
-                                    click to swap
-                                  </span>
-                                )}
-                                {!isSource && !swapPickingTarget && (
-                                  <button
-                                    onClick={e => { e.stopPropagation(); setSwapSourceKey(field.key); setSwapPickingTarget(false); }}
-                                    className="px-1 py-0.5 text-[10px] text-black/0 group-hover/hdr:text-black/40 rounded transition-colors"
-                                    title="Swap this column with another"
-                                  >
-                                    ⇄
-                                  </button>
-                                )}
-                              </div>
-                            </th>
-                          );
-                        })}
-                        {Object.keys(mapping).filter(k => k.startsWith('__custom_col__')).map(k => (
-                          <th key={k} className="px-3 py-1.5 border-r border-[#dadce0] font-normal min-w-[150px] select-none">
-                            <span className="text-purple-700">{k.slice(14)}</span>
-                          </th>
-                        ))}
-                        <th className="px-3 py-1.5 w-32 font-normal border-l border-[#dadce0] sticky right-0 bg-[#f8f9fa] z-20 text-center">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {processedData
-                        .filter(row => {
-                          if (showOnlyErrors) return row.status === 'red';
-                          if (showOnlyCorrect) return row.status === 'green';
-                          if (showOnlyEdited) return manualEditsMap[row.id] !== undefined;
-                          return true;
-                        })
-                        // Paginated so a large file doesn't mount every row as DOM at once (confirmed to
-                        // bloat to 100k+ nodes for 5,000 rows) — see reviewPage/reviewPageSize state above
-                        // and the pagination controls rendered below the table.
-                        .slice((reviewPage - 1) * reviewPageSize, reviewPage * reviewPageSize)
-                        .map((row, idx) => (
-                        <tr key={row.id} className="border-b border-[#dadce0] hover:bg-[#f1f3f4] transition-colors group h-9">
-                          <td className="px-2 py-1 text-center border-r border-[#dadce0] bg-[#f8f9fa] text-[10px] text-[#70757a] select-none sticky left-0 z-10">
-                            {row.id + 1}
-                          </td>
-                          {SCHEMAS[dataType].fields.map(field => {
-                            const val = row[field.key];
-                            const isEditing = editingCell?.rowId === row.id && editingCell?.fieldKey === field.key;
-                            const hasFieldError = row.fieldErrors?.includes(field.key);
-                            const isAutoFixed = row.autoFixedFields?.includes(field.key);
-                            const isManuallyEdited = row.manualEdits?.includes(field.key);
-                            const calcLog = row.calculationLogs?.[field.key];
-
-                            // Determine background class
-                            let bgClass = '';
-                            if (isEditing) {
-                              bgClass = 'bg-white p-0 ring-2 ring-indigo-500 z-20 shadow-lg';
-                            } else if (hasFieldError) {
-                              bgClass = 'bg-rose-50';
-                            } else if (isManuallyEdited) {
-                              bgClass = 'bg-orange-50';
-                            } else if (isAutoFixed) {
-                              bgClass = calcLog ? 'bg-sky-50' : 'bg-amber-50';
-                            }
-
-                            return (
-                              <td
-                                key={field.key}
-                                data-cell={`${row.id}-${field.key}`}
-                                className={`px-3 py-0 text-sm border-r border-[#dadce0] last:border-r-0 cursor-cell relative min-w-[150px] transition-all ${bgClass}`}
-                                onClick={() => startEditingCell(row.id, field.key)}
-                                title={calcLog || ''}
-                              >
-                                {isEditing ? (
-                                  field.options ? (
-                                    <select
-                                      autoFocus
-                                      className="w-full h-full px-3 py-1 bg-inherit outline-none text-sm appearance-none"
-                                      value={val === null || val === undefined ? '' : String(val)}
-                                      onChange={(e) => {
-                                        const newData = [...processedData];
-                                        const rowIndex = newData.findIndex(r => r.id === row.id);
-                                        newData[rowIndex] = { ...newData[rowIndex], [field.key]: e.target.value };
-                                        setProcessedData(newData);
-                                      }}
-                                      onBlur={(e) => {
-                                        setEditingCell(null);
-                                        const updatedRow = { ...row, [field.key]: e.target.value };
-                                        handleRowUpdate(updatedRow, field.key);
-                                      }}
-                                    >
-                                      <option value="">Select {field.label}...</option>
-                                      {field.options.map(opt => (
-                                        <option key={opt} value={opt}>{opt}</option>
-                                      ))}
-                                    </select>
-                                  ) : (field.key === 'region' || field.key === 'sub_region') && (() => {
-                                    const rowCountry = String(row['country'] || '').trim().toLowerCase();
-                                    return rowCountry && regionRefData.some(r => r.Parent?.toLowerCase() === rowCountry);
-                                  })() ? (
-                                    <select
-                                      autoFocus
-                                      className="w-full h-full px-3 py-1 bg-inherit outline-none text-sm appearance-none"
-                                      value={val === null || val === undefined ? '' : String(val)}
-                                      onChange={(e) => {
-                                        if (!e.target.value) return;
-                                        setEditingCell(null);
-                                        const updatedRow = { ...row, [field.key]: e.target.value };
-                                        handleRowUpdate(updatedRow, field.key);
-                                      }}
-                                    >
-                                      <option value="">— select region —</option>
-                                      {Array.from(
-                                        new Map(
-                                          regionRefData
-                                            .filter(r => r.Parent?.toLowerCase() === String(row['country'] || '').trim().toLowerCase() && r.Type?.toLowerCase() !== 'country')
-                                            .map(r => [r.Region, r])
-                                        ).values()
-                                      )
-                                        .sort((a, b) => a.Region.localeCompare(b.Region))
-                                        .map(r => (
-                                          <option key={r.Region} value={r.Region}>{r.Region}</option>
-                                        ))}
-                                    </select>
-                                  ) : field.key === 'cellar_name' ? (
-                                    <CellarAutocomplete
-                                      value={val === null || val === undefined ? '' : String(val)}
-                                      suggestions={masterCellars}
-                                      onChange={(newVal) => {
-                                        const newData = [...processedData];
-                                        const rowIndex = newData.findIndex(r => r.id === row.id);
-                                        newData[rowIndex] = { ...newData[rowIndex], [field.key]: newVal };
-                                        setProcessedData(newData);
-                                      }}
-                                      onBlur={(finalVal) => {
-                                        setEditingCell(null);
-                                        const updatedRow = { ...row, [field.key]: finalVal };
-                                        handleRowUpdate(updatedRow, field.key);
-                                      }}
-                                      onKeyDown={(e) => {
-                                        if (e.key === 'Enter') {
-                                          setEditingCell(null);
-                                          const updatedRow = { ...row, [field.key]: (e.target as HTMLInputElement).value };
-                                          handleRowUpdate(updatedRow, field.key);
-                                        }
-                                      }}
-                                    />
-                                  ) : (
-                                    <input
-                                      autoFocus
-                                      type="text"
-                                      className="w-full h-full px-3 py-1 bg-inherit outline-none text-sm"
-                                      value={val === null || val === undefined ? '' : String(val)}
-                                      onChange={(e) => {
-                                        const newData = [...processedData];
-                                        const rowIndex = newData.findIndex(r => r.id === row.id);
-                                        newData[rowIndex] = { ...newData[rowIndex], [field.key]: e.target.value };
-                                        setProcessedData(newData);
-                                      }}
-                                      onBlur={(e) => {
-                                        setEditingCell(null);
-                                        const updatedRow = { ...row, [field.key]: e.target.value };
-                                        handleRowUpdate(updatedRow, field.key);
-                                      }}
-                                      onKeyDown={(e) => {
-                                        if (e.key === 'Enter') {
-                                          setEditingCell(null);
-                                          const updatedRow = { ...row, [(e.target as HTMLInputElement).name || field.key]: (e.target as HTMLInputElement).value };
-                                          handleRowUpdate(updatedRow, field.key);
-                                        }
-                                      }}
-                                    />
-                                  )
-                                ) : (
-                                  <div className="flex items-center gap-2 h-full overflow-hidden">
-                                    {isAutoFixed && (
-                                      calcLog ? (
-                                        <Calculator size={10} className="text-sky-500 shrink-0" />
-                                      ) : (
-                                        <Sparkles size={10} className="text-amber-500 shrink-0" />
-                                      )
-                                    )}
-                                    {isManuallyEdited && (
-                                      <div className="w-1.5 h-1.5 rounded-full bg-orange-500 shrink-0" />
-                                    )}
-                                    <span className={`truncate whitespace-nowrap ${isAutoFixed ? (calcLog ? 'text-sky-900 font-medium' : 'text-amber-900 font-medium') : 'text-[#202124]'} ${isManuallyEdited ? 'text-orange-900 font-medium' : ''} ${hasFieldError ? 'text-rose-600 font-bold' : ''}`}>
-                                      {field.key === 'vintage' ? (
-                                        <span className={`px-1 rounded text-[11px] font-mono ${
-                                          hasFieldError ? 'bg-rose-100' : ''
-                                        }`}>
-                                          {val}
-                                        </span>
-                                      ) : (
-                                        String(val || '')
-                                      )}
-                                    </span>
-                                    {field.key === 'lwin' && row.isDuplicate && (
-                                      <Copy size={10} className="text-amber-500 shrink-0" />
-                                    )}
-                                  </div>
-                                )}
-                              </td>
-                            );
-                          })}
-                          {Object.keys(mapping).filter(k => k.startsWith('__custom_col__')).map(k => (
-                            <td key={k} className="px-3 py-0 text-sm border-r border-[#dadce0] min-w-[150px]">
-                              <span className="text-xs text-purple-800">{String(row[k] ?? '')}</span>
-                            </td>
-                          ))}
-                           <td className="px-3 py-1 border-l border-[#dadce0] sticky right-0 bg-white group-hover:bg-[#f1f3f4] z-10">
-                            <div className="flex items-center justify-center gap-2">
-                              <button
-                                onClick={(e) => { e.stopPropagation(); handleDeleteRow(row.id); }}
-                                title="Remove this row"
-                                className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 p-0.5 rounded hover:bg-rose-100 text-black/20 hover:text-rose-500"
-                              >
-                                <X size={11} />
-                              </button>
-                              {row.status === 'red' ? (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    const firstErrorField = row.fieldErrors?.[0] || (getCurrentSchema().fields[0]?.key || 'listing_wine_name');
-                                    startEditingCell(row.id, firstErrorField);
-                                  }}
-                                  title={row.errors.join('\n')}
-                                  className="bg-rose-600 text-white px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider hover:bg-rose-700 transition-colors flex items-center gap-1"
-                                >
-                                  <AlertCircle size={10} />
-                                  Fix Issue
-                                </button>
-                              ) : row.isDuplicate ? (
-                                <div className="flex flex-col gap-1">
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setComparingDuplicate({ row1: row.duplicateOf!, row2: row.id });
-                                    }}
-                                    title="Compare these rows side-by-side"
-                                    className="bg-sky-100 text-sky-700 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider hover:bg-sky-200 transition-colors flex items-center gap-1 border border-sky-200 w-full justify-center"
-                                  >
-                                    <HelpCircle size={10} />
-                                    Compare
-                                  </button>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleDeleteRow(row.id);
-                                    }}
-                                    title={`Suspect duplicate of row ${(row.duplicateOf ?? 0) + 1}. Click to remove.`}
-                                    className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider hover:bg-amber-200 transition-colors flex items-center gap-1 border border-amber-200 w-full justify-center"
-                                  >
-                                    <Trash2 size={10} />
-                                    Remove
-                                  </button>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleIgnoreDuplicate(row.id);
-                                    }}
-                                    title="Mark as not a duplicate"
-                                    className="bg-gray-100 text-gray-700 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider hover:bg-gray-200 transition-colors flex items-center gap-1 border border-gray-200 w-full justify-center"
-                                  >
-                                    <Check size={10} />
-                                    Keep
-                                  </button>
-                                </div>
-                              ) : row.isPriceOutlier ? (
-                                <div className="flex flex-col gap-1">
-                                  <button 
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      startEditingCell(row.id, dataType === 'client_reserves' ? 'case_cost_price' : 'exc_vat_case');
-                                    }}
-                                    title="Modify price"
-                                    className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider hover:bg-indigo-200 transition-colors flex items-center gap-1 border border-indigo-200 w-full justify-center"
-                                  >
-                                    <Edit2 size={10} />
-                                    Modify
-                                  </button>
-                                  {row.priceOutlierRefRowId !== undefined && (
-                                    <button 
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setComparingDuplicate({ row1: row.priceOutlierRefRowId!, row2: row.id });
-                                      }}
-                                      title="Compare with reference row"
-                                      className="bg-sky-100 text-sky-700 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider hover:bg-sky-200 transition-colors flex items-center gap-1 border border-sky-200 w-full justify-center"
-                                    >
-                                      <HelpCircle size={10} />
-                                      Compare
-                                    </button>
-                                  )}
-                                  <button 
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleIgnorePriceWarning(row.id);
-                                    }}
-                                    title="Keep this price"
-                                    className="bg-gray-100 text-gray-700 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider hover:bg-gray-200 transition-colors flex items-center gap-1 border border-gray-200 w-full justify-center"
-                                  >
-                                    <Check size={10} />
-                                    Keep
-                                  </button>
-                                </div>
-                              ) : (
-                                <div 
-                                  className="flex items-center justify-center w-full h-full cursor-help"
-                                  title={row.errors.length > 0 ? row.errors.join('\n') : 'Row is valid'}
-                                >
-                                  <div className={`w-2.5 h-2.5 rounded-full ${
-                                    row.status === 'green' ? 'bg-emerald-500' : 'bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.5)]'
-                                  }`} />
-                                </div>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Pagination footer for the review table above — keeps the DOM small regardless of file
-                    size (see reviewPage/reviewPageSize state and the .slice() on the table body above). */}
-                {(() => {
-                  const filteredCount = processedData.filter(row => {
-                    if (showOnlyErrors) return row.status === 'red';
-                    if (showOnlyCorrect) return row.status === 'green';
-                    if (showOnlyEdited) return manualEditsMap[row.id] !== undefined;
-                    return true;
-                  }).length;
-                  const totalPages = Math.max(1, Math.ceil(filteredCount / reviewPageSize));
-                  const clampedPage = Math.min(reviewPage, totalPages);
-                  const rangeStart = filteredCount === 0 ? 0 : (clampedPage - 1) * reviewPageSize + 1;
-                  const rangeEnd = Math.min(clampedPage * reviewPageSize, filteredCount);
-                  return (
-                    <div className="flex items-center justify-between px-4 py-2 bg-[#f8f9fa] border-t border-[#dadce0] text-[11px] text-[#5f6368]">
-                      <div className="flex items-center gap-2">
-                        <span>Rows per page</span>
-                        <select
-                          value={reviewPageSize}
-                          onChange={(e) => { setReviewPageSize(Number(e.target.value)); setReviewPage(1); }}
-                          className="border border-[#dadce0] rounded px-2 py-1 bg-white cursor-pointer"
-                        >
-                          <option value={50}>50</option>
-                          <option value={100}>100</option>
-                          <option value={200}>200</option>
-                          <option value={500}>500</option>
-                        </select>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span>{filteredCount === 0 ? '0 rows' : `${rangeStart}–${rangeEnd} of ${filteredCount}`}</span>
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => setReviewPage(1)}
-                            disabled={clampedPage <= 1}
-                            className="px-2 py-1 rounded border border-[#dadce0] bg-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-black/5"
-                            title="First page"
-                          >«</button>
-                          <button
-                            onClick={() => setReviewPage(p => Math.max(1, p - 1))}
-                            disabled={clampedPage <= 1}
-                            className="px-2 py-1 rounded border border-[#dadce0] bg-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-black/5"
-                            title="Previous page"
-                          >‹</button>
-                          <span className="px-2">{clampedPage} of {totalPages}</span>
-                          <button
-                            onClick={() => setReviewPage(p => Math.min(totalPages, p + 1))}
-                            disabled={clampedPage >= totalPages}
-                            className="px-2 py-1 rounded border border-[#dadce0] bg-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-black/5"
-                            title="Next page"
-                          >›</button>
-                          <button
-                            onClick={() => setReviewPage(totalPages)}
-                            disabled={clampedPage >= totalPages}
-                            className="px-2 py-1 rounded border border-[#dadce0] bg-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-black/5"
-                            title="Last page"
-                          >»</button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
-          </div>
-        )}
+            <ReviewTable
+              processedData={processedData}
+              dataType={dataType}
+              mapping={mapping}
+              regionRefData={regionRefData}
+              masterCellars={masterCellars}
+              greenCount={greenCount}
+              redCount={redCount}
+              showOnlyErrors={showOnlyErrors}
+              showOnlyCorrect={showOnlyCorrect}
+              showOnlyEdited={showOnlyEdited}
+              reviewPage={reviewPage}
+              reviewPageSize={reviewPageSize}
+              editingCell={editingCell}
+              pendingBulkAction={pendingBulkAction}
+              isAiProcessing={isAiProcessing}
+              history={history}
+              autoFixedMap={autoFixedMap}
+              manualEditsMap={manualEditsMap}
+              swapSourceKey={swapSourceKey}
+              swapPickingTarget={swapPickingTarget}
+              setShowOnlyErrors={setShowOnlyErrors}
+              setShowOnlyCorrect={setShowOnlyCorrect}
+              setShowOnlyEdited={setShowOnlyEdited}
+              setReviewPage={setReviewPage}
+              setReviewPageSize={setReviewPageSize}
+              setEditingCell={setEditingCell}
+              setProcessedData={setProcessedData}
+              setPendingBulkAction={setPendingBulkAction}
+              setSwapSourceKey={setSwapSourceKey}
+              setSwapPickingTarget={setSwapPickingTarget}
+              setComparingDuplicate={setComparingDuplicate}
+              applyBulkFix={applyBulkFix}
+              handleAiSmartFix={handleAiSmartFix}
+              handleRevalidate={handleRevalidate}
+              handleRevertAiFixes={handleRevertAiFixes}
+              handleUndo={handleUndo}
+              startDuplicateReview={startDuplicateReview}
+              startPriceReview={startPriceReview}
+              handleSwapColumns={handleSwapColumns}
+              startEditingCell={startEditingCell}
+              handleRowUpdate={handleRowUpdate}
+              handleDeleteRow={handleDeleteRow}
+              handleIgnoreDuplicate={handleIgnoreDuplicate}
+              handleIgnorePriceWarning={handleIgnorePriceWarning}
+              getCurrentSchema={getCurrentSchema}
+            />
+          )}
       </AnimatePresence>
 
       {/* --- Modals rendered outside the step switch, so they can float above any step --- */}
@@ -4735,87 +2249,16 @@ export default function App() {
       {/* Column picker modal for manual entry (showColumnPicker/pickerSelectedKeys state above, opened by
           handleOpenManualEntry). Required fields are locked on; optional fields are toggled here and the
           selection is confirmed by handleStartManualEntry above. */}
-      {showColumnPicker && (() => {
-        const schema = getCurrentSchema();
-        const requiredFields = schema.fields.filter(f => f.required);
-        const optionalFields = schema.fields.filter(f => !f.required);
-        return (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full max-h-[80vh] flex flex-col">
-              <div className="p-6 border-b border-black/10">
-                <h2 className="text-xl font-serif font-medium">Choose columns for {SCHEMAS[dataType].label}</h2>
-                <p className="text-sm text-black/50 mt-1">Required fields are always included. Select the optional columns you need.</p>
-              </div>
-              <div className="flex-1 overflow-y-auto p-6 space-y-6">
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-widest text-black/30 mb-3">Required — always included</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    {requiredFields.map(f => (
-                      <div key={f.key} className="flex items-center gap-2 px-3 py-2 bg-black/[0.02] rounded-lg opacity-60">
-                        <div className="w-4 h-4 rounded border-2 border-black/30 bg-black/10 flex items-center justify-center flex-shrink-0">
-                          <Check className="w-2.5 h-2.5 text-black/60" />
-                        </div>
-                        <span className="text-sm text-black/70">{f.label}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <p className="text-xs font-bold uppercase tracking-widest text-black/30">Optional</p>
-                    <div className="flex gap-2 text-xs">
-                      <button
-                        onClick={() => setPickerSelectedKeys(prev => new Set([...Array.from(prev), ...optionalFields.map(f => f.key)]))}
-                        className="text-indigo-600 hover:underline"
-                      >All</button>
-                      <span className="text-black/20">·</span>
-                      <button
-                        onClick={() => setPickerSelectedKeys(new Set(requiredFields.map(f => f.key)))}
-                        className="text-black/40 hover:underline"
-                      >None</button>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {optionalFields.map(f => {
-                      const checked = pickerSelectedKeys.has(f.key);
-                      return (
-                        <label key={f.key} className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-black/[0.02] cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={e => {
-                              const next = new Set(pickerSelectedKeys);
-                              if (e.target.checked) next.add(f.key); else next.delete(f.key);
-                              setPickerSelectedKeys(next);
-                            }}
-                            className="rounded"
-                          />
-                          <span className="text-sm text-black/70">{f.label}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-              <div className="p-6 border-t border-black/10 flex justify-between items-center">
-                <p className="text-xs text-black/40">{pickerSelectedKeys.size} columns selected</p>
-                <div className="flex gap-3">
-                  <button onClick={() => setShowColumnPicker(false)} className="px-4 py-2 text-sm text-black/50 hover:text-black transition-colors">
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleStartManualEntry}
-                    className="flex items-center gap-2 px-5 py-2.5 bg-[#1A1A1A] text-white text-sm font-medium rounded-xl hover:bg-black/80 transition-colors"
-                  >
-                    Start Entering Data
-                    <ArrowRight size={14} />
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+      {showColumnPicker && (
+        <ColumnPickerModal
+          dataType={dataType}
+          schema={getCurrentSchema()}
+          pickerSelectedKeys={pickerSelectedKeys}
+          setPickerSelectedKeys={setPickerSelectedKeys}
+          onConfirm={handleStartManualEntry}
+          onClose={() => setShowColumnPicker(false)}
+        />
+      )}
 
       </main>
 
@@ -4840,43 +2283,7 @@ export default function App() {
         }}
       />
 
-      {/* Validation progress overlay — shown while processData() chunks through the rows (isValidating/
-          validationProgress state above). Blocks interaction but stays responsive/animated since the
-          underlying work now yields between chunks instead of running as one long blocking pass. */}
-      <AnimatePresence>
-        {isValidating && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center"
-          >
-            <motion.div
-              initial={{ scale: 0.96, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              className="bg-white rounded-2xl shadow-xl p-8 w-[360px] text-center"
-            >
-              <p className="text-sm font-semibold text-black mb-1">Validating your file…</p>
-              <p className="text-xs text-black/50 mb-4">
-                {validationProgress.total > 0
-                  ? `${validationProgress.done.toLocaleString()} / ${validationProgress.total.toLocaleString()} rows`
-                  : 'Starting…'}
-              </p>
-              <div className="w-full h-2 bg-black/[0.06] rounded-full overflow-hidden">
-                <motion.div
-                  className="h-full bg-[#1A1A1A] rounded-full"
-                  animate={{
-                    width: validationProgress.total > 0
-                      ? `${Math.min(100, (validationProgress.done / validationProgress.total) * 100)}%`
-                      : '5%'
-                  }}
-                  transition={{ ease: 'easeOut' }}
-                />
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <ValidationProgressOverlay isValidating={isValidating} validationProgress={validationProgress} />
 
       <footer className="max-w-[98vw] mx-auto mt-20 pt-8 border-t border-black/10 flex justify-between items-center text-[10px] uppercase tracking-[0.2em] text-black/30">
         <div>© 2026 Druid</div>

@@ -102,15 +102,15 @@ export const SchemaMapper: React.FC<SchemaMapperProps> = ({ headers, fields, onC
   // Concat mode: combine multiple source columns into one output value with a separator.
   // Stored as __concat__{"cols":["A","B"],"sep":" - "} in the mapping.
   const isConcatMode = (key: string) => mapping[key]?.startsWith('__concat__') ?? false;
+  const parseConcatDef = (val: string): { cols: string[]; sep: string } => {
+    try { return JSON.parse(val.slice(10)); } catch { return { cols: [], sep: ' ' }; }
+  };
   const getConcatDef = (key: string): { cols: string[]; sep: string } => {
     if (!isConcatMode(key)) return { cols: [], sep: ' ' };
-    try { return JSON.parse(mapping[key].slice(10)); } catch { return { cols: [], sep: ' ' }; }
+    return parseConcatDef(mapping[key]);
   };
   const handleSetConcat = (fieldKey: string) => {
     setMapping(prev => ({ ...prev, [fieldKey]: '__concat__{"cols":[],"sep":" "}' }));
-  };
-  const parseConcatDef = (val: string): { cols: string[]; sep: string } => {
-    try { return JSON.parse(val.slice(10)); } catch { return { cols: [], sep: ' ' }; }
   };
   const handleConcatAddCol = (fieldKey: string, col: string) => {
     if (!col) return;
