@@ -5,12 +5,14 @@ modules, and runs the DB schema migration once at startup.
 Route logic lives in routes/. DB utilities in db.py. Auth in auth.py.
 """
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response as StarletteResponse
+from starlette.responses import FileResponse, Response as StarletteResponse
 
 from db import init_db
 from routes.identity import router as identity_router
@@ -79,6 +81,20 @@ app.include_router(master_router)
 
 # Create tables and apply migrations once at startup
 init_db()
+
+# Serve the React frontend in production.
+# The dist/ folder is built by the deployment pipeline before the app starts.
+# All non-API routes fall through to index.html so the SPA router works.
+_dist = Path(__file__).parent / "dist"
+if _dist.exists():
+    app.mount("/assets", StaticFiles(directory=_dist / "assets"), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_frontend(full_path: str):
+        file = _dist / full_path
+        if file.is_file():
+            return FileResponse(file)
+        return FileResponse(_dist / "index.html")
 
 
 if __name__ == "__main__":
