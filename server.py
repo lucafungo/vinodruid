@@ -73,6 +73,11 @@ class _MaxBodySizeMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(_MaxBodySizeMiddleware)
 
+@app.get("/health", include_in_schema=False)
+def health():
+    return {"status": "ok", "db": "ready" if _db_ready else "unavailable"}
+
+
 # Mount all route modules
 app.include_router(identity_router)
 app.include_router(sessions_router)
@@ -80,7 +85,12 @@ app.include_router(admin_router)
 app.include_router(master_router)
 
 # Create tables and apply migrations once at startup
-init_db()
+_db_ready = False
+try:
+    init_db()
+    _db_ready = True
+except Exception as _db_err:
+    print(f"DB init failed: {_db_err}")
 
 # Serve the React frontend in production.
 # The dist/ folder is built by the deployment pipeline before the app starts.
