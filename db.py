@@ -19,13 +19,27 @@ load_dotenv(override=True)
 SERVER = os.getenv("SQL_SERVER", r"WOLUCA\SQLEXPRESS")
 DATABASE = os.getenv("SQL_DATABASE", "WineOnboarding")
 DRIVER = os.getenv("SQL_DRIVER", "ODBC Driver 17 for SQL Server")
+_SQL_USER = os.getenv("SQL_USER", "")
+_SQL_PASSWORD = os.getenv("SQL_PASSWORD", "")
 
 
 def make_conn_str(database: str) -> str:
+    if _SQL_USER and _SQL_PASSWORD:
+        # Azure SQL: use SQL username/password auth
+        return (
+            f"DRIVER={{{DRIVER}}};SERVER={SERVER};DATABASE={database};"
+            f"UID={_SQL_USER};PWD={_SQL_PASSWORD};"
+            "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
+        )
+    # Local dev: Windows Integrated Auth (domain-joined machine only)
     return f"DRIVER={{{DRIVER}}};SERVER={SERVER};DATABASE={database};Trusted_Connection=yes;"
 
 
 def ensure_database():
+    # Azure SQL: the database is created in the portal — skip this.
+    # Local dev only: creates the database on SQL Server Express if missing.
+    if _SQL_USER:
+        return
     conn = pyodbc.connect(make_conn_str("master"), autocommit=True)
     try:
         conn.execute(
