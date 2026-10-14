@@ -43,6 +43,7 @@ jobs:
           path: |
             .
             !antenv/
+            !node_modules/
 
   deploy:
     runs-on: ubuntu-latest
