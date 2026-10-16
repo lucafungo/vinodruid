@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth0 } from '@auth0/auth0-react';
 
-const API = 'http://localhost:3000';
+const API = '';
 
 // Which sidebar tab/section of the admin panel is currently shown.
 type Section = 'orgs' | 'users' | 'sessions' | 'audit' | 'regions';
