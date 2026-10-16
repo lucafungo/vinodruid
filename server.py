@@ -93,18 +93,22 @@ except Exception as _db_err:
     print(f"DB init failed: {_db_err}")
 
 # Serve the React frontend in production.
-# The dist/ folder is built by the deployment pipeline before the app starts.
 # All non-API routes fall through to index.html so the SPA router works.
 _dist = Path(__file__).parent / "dist"
-if _dist.exists():
+print(f"Looking for dist at: {_dist} — exists: {_dist.exists()}")
+
+if (_dist / "assets").exists():
     app.mount("/assets", StaticFiles(directory=_dist / "assets"), name="assets")
 
-    @app.get("/{full_path:path}", include_in_schema=False)
-    def serve_frontend(full_path: str):
-        file = _dist / full_path
-        if file.is_file():
-            return FileResponse(file)
-        return FileResponse(_dist / "index.html")
+@app.get("/{full_path:path}", include_in_schema=False)
+def serve_frontend(full_path: str):
+    index = _dist / "index.html"
+    if not index.exists():
+        return {"error": "Frontend not built", "dist_path": str(_dist), "dist_exists": _dist.exists()}
+    file = _dist / full_path
+    if file.is_file():
+        return FileResponse(file)
+    return FileResponse(index)
 
 
 if __name__ == "__main__":
