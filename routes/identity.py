@@ -1,14 +1,24 @@
 """
-Identity routes: GET /api/me
-Returns the logged-in user's profile and their organisation.
-Called by the frontend on login/app load to know who's signed in.
+Identity routes: GET /api/me, GET /api/config
 """
+import os
+
 from fastapi import APIRouter, HTTPException, Request
 
 from auth import get_org_id, get_user_id
 from db import get_db, row_as_dict
 
 router = APIRouter()
+
+
+@router.get("/api/config", include_in_schema=False)
+def get_config():
+    """Public endpoint: returns Auth0 config the frontend needs to initialise."""
+    return {
+        "auth0Domain": os.getenv("VITE_AUTH0_DOMAIN") or os.getenv("AUTH0_DOMAIN", ""),
+        "auth0ClientId": os.getenv("VITE_AUTH0_CLIENT_ID", ""),
+        "auth0Audience": os.getenv("VITE_AUTH0_AUDIENCE") or os.getenv("AUTH0_AUDIENCE", ""),
+    }
 
 
 @router.get("/api/me")
